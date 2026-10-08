@@ -231,7 +231,7 @@ describe("a bot's external runtime", () => {
         { timeout: 15_000 }).toBe("done");
       const receipt = await client.rpc("tools/call", { name: "check_delegation", arguments: { task_id: taskId } });
       expect(receipt.isError).not.toBe(true);
-      expect(receipt.content[0].text).toContain("finished task");
+      expect(receipt.content[0].text).toContain("returned a reply for task");
       // The runtime reads its own result; the bot's engine is not woken on
       // the pinned thread to answer it a second time.
       await expect.poll(async () => (await botState(runtime.id)).busy, { timeout: 15_000 }).toBeFalsy();

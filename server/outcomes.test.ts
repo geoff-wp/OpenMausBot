@@ -11,6 +11,7 @@ describe("host-owned operational outcomes", () => {
   let delivery: Map<string, string>;
   let effects: number;
   let lostResponse: boolean;
+  let consumeBeforeLostResponse: boolean;
   let busy: boolean;
   let requestOwnsResult: boolean;
   let probe: "pass" | "fail" | "pending" | "unavailable" | null;
@@ -33,7 +34,7 @@ describe("host-owned operational outcomes", () => {
   };
   beforeEach(() => {
     clock = 10_000; binding = "registered-resource"; records = new Map(); delivery = new Map(); effects = 0;
-    lostResponse = false; busy = false; requestOwnsResult = true; probe = "pass";
+    lostResponse = false; consumeBeforeLostResponse = false; busy = false; requestOwnsResult = true; probe = "pass";
     service = new OutcomeService({
       now: () => clock, exists: () => true, binding: () => binding,
       persistence: {
@@ -45,7 +46,11 @@ describe("host-owned operational outcomes", () => {
       deliver: async value => {
         if (busy) throw new OutcomeError("Exact receiving task busy", 409, "guarded_busy");
         if (!delivery.has(value.delivery!.sendId)) { effects++; delivery.set(value.delivery!.sendId, "receiving-message"); }
-        if (lostResponse) { lostResponse = false; throw new Error("Response lost after actual persistence"); }
+        if (lostResponse) {
+          lostResponse = false;
+          if (consumeBeforeLostResponse) service.consume(value.id, value.attemptId, value.result!.id, recipient);
+          throw new Error("Response lost after actual persistence");
+        }
         return { messageId: delivery.get(value.delivery!.sendId)! };
       },
       probe: async () => probe === null ? null as never : { status: probe, evidence: "Host checked the actual registered resource" },
@@ -137,6 +142,31 @@ describe("host-owned operational outcomes", () => {
     service.observe({ type: "item.completed", itemType: "tool", threadId: recipient.threadId, turnId: "receiving-turn", itemId: "actual-work", ok: true }, recipient.generation);
     expect(service.get(value.id).owner.botId).toBe(recipient.botId);
     expect(service.get(value.id).state).toBe("verified_success");
+  });
+  it("does not downgrade an independently confirmed delivery after its original send response is lost", async () => {
+    service.register(definition({ kind: "handoff", recipient, checks: [], firstWork: { tool: "Read" } }));
+    publish(); lostResponse = true; consumeBeforeLostResponse = true;
+    await service.drain();
+    const value = service.get("operational-work");
+    expect(value.delivery?.state).toBe("delivered");
+    expect(value.delivery?.error).toBeUndefined();
+    expect(value.consumption?.messageId).toBe("receiving-message");
+    await service.drain(); expect(effects).toBe(1);
+  });
+
+  it("does not poll terminal checks or create new receipt versions for unchanged current proof", async () => {
+    service.register(definition({ checks: [{ id: "file", kind: "artifact", path: "required.txt", sha256: "a".repeat(64), description: "Actual artifact", maxAgeMs: 5_000 }] }));
+    publish(); await service.verify("operational-work");
+    const verified = service.get("operational-work");
+    expect(verified.state).toBe("verified_success");
+    clock += 1_000; await service.verify(verified.id);
+    expect(service.get(verified.id).version).toBe(verified.version);
+    clock += 5_001; await service.tick();
+    expect(records.get(verified.id)?.version).toBe(verified.version);
+    // A deliberate re-check still refreshes genuinely expired evidence.
+    await service.verify(verified.id);
+    expect(service.get(verified.id).state).toBe("verified_success");
+    expect(service.get(verified.id).version).toBeGreaterThan(verified.version);
   });
 
   it("recognizes real request-scoped work without requiring an acknowledgment phrase or ceremony", async () => {

@@ -1703,12 +1703,13 @@ export class RoutineManager {
       }
       const pending = this.options.hasPendingDelegations?.(event.threadId) === true;
       const outcome = this.options.outcomeStatus?.(event.threadId);
+      const outcomeReason = outcome ? redactSecretsInText(outcome.reason).trim().slice(0, 500) : undefined;
       run.outcomeVerification = outcome?.state;
       run.status = outcome?.state === "verified_failure" ? "failed" : pending || outcome?.state === "pending" ? "waiting" : "completed";
-      run.attention = outcome?.state === "pending" ? outcome.reason : pending ? "Waiting for delegated work to finish" : undefined;
+      run.attention = outcome?.state === "pending" ? outcomeReason || undefined : pending ? "Waiting for delegated work to finish" : undefined;
       if (run.status !== "waiting") run.finishedAt = this.now();
       run.error = undefined;
-      if (run.status === "failed") run.error = outcome?.reason;
+      if (run.status === "failed") run.error = outcomeReason;
     } else {
       return null;
     }
@@ -1726,6 +1727,7 @@ export class RoutineManager {
     const outcome = this.options.outcomeStatus?.(threadId);
     if (!outcome || outcome.state === "pending" || this.options.hasPendingDelegations?.(threadId)) return;
     run.outcomeVerification = outcome.state;
+    if (outcome.state === "verified_failure") { this.failRun(run, outcome.reason); return; }
     run.status = outcome.state === "verified_success" ? "completed" : "failed";
     run.error = run.status === "failed" ? outcome.reason : undefined;
     run.attention = undefined;

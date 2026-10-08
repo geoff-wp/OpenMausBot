@@ -45,7 +45,6 @@ Use only mapped, tested commands:
 - [Chat turns](chat-turns.md)
 - [Conversation context compaction](context-compaction.md)
 - [Work summaries and engine hooks](digests.md)
-- [Operational outcomes and durable result handoffs](outcomes.md)
 - [OpenAI-compatible structured tools](openai-tools.md)
 - [Per-bot tool selection and local-model checks](tool-selection.md)
 - [OpenCode model variants through ACP](opencode-variants.md)
@@ -93,6 +92,8 @@ Other renderer-only behavior—Settings, sidebar drag-and-drop, the VM modal, th
 built-in browser panel, and updater UI—is still not proven by the harness. Use
 the relevant Electron/package smoke test and state that limitation. Add a map
 entry only after the shared control surface can really drive it.
+
+The [operational outcomes fixture](outcomes.md) checks immediate publication, guarded delivery, independent verification, actual pickup, and durable failure history using only a disposable server and fake providers.
 
 The [MCP sign-in fixture](mcp-sign-in.md) checks remote sign-in, callback URL
 paste-back, MCP tools and logout cancellation through the real settings panel

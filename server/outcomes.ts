@@ -93,6 +93,7 @@ export function normalizeOutcomeEvidence(raw: unknown): string {
 export class OutcomeService {
   private readonly sending = new Set<string>();
   private readonly verifying = new Set<string>();
+  private readonly nextProbeAt = new Map<string, number>();
   private readonly tools = new Map<string, { name: string; input: string }>();
   private readonly deps: OutcomeServiceDeps;
   constructor(deps: OutcomeServiceDeps) { this.deps = deps; }
@@ -260,6 +261,9 @@ export class OutcomeService {
         this.live(value, start.attemptId, start.target);
         if (!answer || !["pass", "fail", "pending", "unavailable"].includes(answer.status) || !answer.evidence?.trim()) answer = { status: "unavailable", evidence: "The required host probe returned an invalid or empty result" };
         const proof: OutcomeVerification = { id: check.id, receiptId: randomUUID(), status: answer.status, at: this.now(), targetKey: value.targetKey, source: "host_probe", verifier: "host", evidence: answer.evidence.slice(0, 2_000) };
+        this.nextProbeAt.set(value.id + ":" + check.id, this.now() + 10_000);
+        const previous = value.verification.find(item => item.id === check.id);
+        if (previous?.targetKey === proof.targetKey && previous.status === proof.status && previous.evidence === proof.evidence && this.now() - previous.at < check.maxAgeMs) continue;
         this.storeProof(value, proof);
         this.write(value);
       }
@@ -346,6 +350,7 @@ export class OutcomeService {
       } catch (error) {
         const value = this.require(initial.id);
         if (value.state === "cancelled" || value.attemptId !== initial.attemptId) continue;
+        if (value.delivery?.state === "delivered") continue;
         const conflict = error as { code?: string; message?: string };
         const busy = conflict.code === "guarded_busy";
         const retryable = busy || conflict.code === "unconfirmed_outcome_delivery" || !(error instanceof OutcomeError);
@@ -365,20 +370,21 @@ export class OutcomeService {
   }
   async tick() {
     for (const stored of this.deps.persistence.list()) {
+      if (["cancelled", "verified_success", "verified_failure"].includes(stored.state)) continue;
       const value = structuredClone(stored);
       this.evaluate(value);
       if (value.state !== stored.state || value.waiting?.overdue !== stored.waiting?.overdue) this.write(value);
       const retryChecks = value.result && value.state !== "cancelled" && !value.humanRequest && !value.deniedRequest && value.checks.some(check => {
         if (check.kind === "attestation") return false;
         const proof = value.verification.find(item => item.id === check.id);
-        return !proof || (proof.status === "pending" && this.now() - proof.at >= 10_000) || this.now() - proof.at > check.maxAgeMs;
+        return this.now() >= (this.nextProbeAt.get(value.id + ":" + check.id) ?? 0) && (!proof || proof.status === "pending" || this.now() - proof.at > check.maxAgeMs);
       });
       if (retryChecks && !this.verifying.has(value.id)) void this.verify(value.id).catch(() => {});
     }
     await this.drain();
   }
   closeRefusal(threadId: string): string | null {
-    const pending = this.list(threadId).filter(value => value.kind === "task" && value.state !== "verified_success" && value.state !== "cancelled");
+    const pending = this.list(threadId).filter(value => value.state !== "verified_success" && value.state !== "cancelled");
     return pending.length ? "Operational work is not verified complete: " + pending.map(value => value.label + " (" + value.state + ")").join(", ") + ". Report the pending checks or blocker; ending a turn does not require closing the task." : null;
   }
 }

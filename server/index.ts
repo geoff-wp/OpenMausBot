@@ -11286,7 +11286,7 @@ _loadPending();
 
 routines = new RoutineManager({
   outcomeStatus: threadId => {
-    const records = outcomeRuntime.service.list(threadId).filter(value => value.kind === "task" && value.state !== "cancelled");
+    const records = outcomeRuntime.service.list(threadId).filter(value => value.state !== "cancelled");
     if (!records.length) return null;
     const failed = records.find(value => value.state === "verified_failure");
     const pending = records.find(value => value.state !== "verified_success");
@@ -15978,11 +15978,13 @@ const outcomeRuntime = createOutcomeRuntime({
   pendingHumanRequest: (threadId, requestId) => store.activePath(threadId).some(message => message.card?.requestId === requestId && requestNeedsInput(message)),
 });
 ROUTES.push(outcomeRuntime.routes);
+const lastOutcomeNoticeVersion = new Map<string, number>();
 bus.subscribe(event => {
   if (shouldIgnoreProviderEvent(event)) return;
   outcomeRuntime.service.observe(event, activeInternalGenerationByThread.get(event.threadId));
   if (event.type === "turn.completed") {
-    for (const outcome of outcomeRuntime.service.list(event.threadId)) if (outcome.kind === "task" && outcome.state !== "verified_success" && outcome.state !== "cancelled") {
+    for (const outcome of outcomeRuntime.service.list(event.threadId)) if (outcome.kind === "task" && outcome.state !== "verified_success" && outcome.state !== "cancelled" && lastOutcomeNoticeVersion.get(outcome.id) !== outcome.version) {
+      lastOutcomeNoticeVersion.set(outcome.id, outcome.version);
       store.appendMessage(event.threadId, { role: "bot", kind: "activity", outcome: { id: outcome.id, attemptId: outcome.attemptId, kind: outcome.kind, label: outcome.label, state: outcome.state, owner: outcome.owner, version: outcome.version }, tool: { name: "outcome: Host outcome remains " + outcome.state + ": " + outcome.label + ". " + (outcome.waiting?.reason ?? "Required proof is missing"), ok: false } });
     }
   }
@@ -17017,13 +17019,13 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (threadBusy(owner.id, threadId) || queuedThreadPosition(owner.id, threadId) !== null || roomHandoffs.activeDirect(threadId)) {
           return json(res, 409, { error: `#${task.title} is still running — wait for it to finish (list_threads), or the person can stop it from the app` });
         }
-        const outcomeCloseRefusal = outcomeRuntime.service.closeRefusal(threadId);
-        if (outcomeCloseRefusal) return json(res, 409, { error: outcomeCloseRefusal, code: "outcome_not_verified" });
         // Closing twice is not an error and leaves no second chip: the
         // thread is already folded away, so there is nothing more to do.
         if (task.closedBy) {
           return json(res, 200, { closed: true, alreadyClosed: true, threadId, title: task.title, botName: owner.name, closedBy: task.closedBy.name });
         }
+        const outcomeCloseRefusal = outcomeRuntime.service.closeRefusal(threadId);
+        if (outcomeCloseRefusal) return json(res, 409, { error: outcomeCloseRefusal, code: "outcome_not_verified" });
         store.appendMessage(threadId, {
           role: "bot",
           kind: "activity",
