@@ -98,6 +98,9 @@ export class OutcomeService {
   private readonly deps: OutcomeServiceDeps;
   constructor(deps: OutcomeServiceDeps) { this.deps = deps; }
   private now() { return this.deps.now?.() ?? Date.now(); }
+  private clearProbeSchedule(outcomeId: string) {
+    for (const key of this.nextProbeAt.keys()) if (key.startsWith(outcomeId + ":")) this.nextProbeAt.delete(key);
+  }
   private require(outcomeId: string): WorkOutcome {
     const value = this.deps.persistence.get(outcomeId);
     if (!value) throw new OutcomeError("No registered outcome matches this id", 404, "outcome_not_found");
@@ -117,6 +120,7 @@ export class OutcomeService {
     this.evaluate(value);
     if (!previous || progress(previous) !== progress(value)) { value.progressAt = this.now(); this.evaluate(value); }
     this.deps.persistence.save(value, before);
+    if (["cancelled", "verified_success", "verified_failure"].includes(value.state) || previous?.attemptId !== value.attemptId) this.clearProbeSchedule(value.id);
     this.deps.changed?.(structuredClone(value));
     return structuredClone(value);
   }
@@ -263,12 +267,17 @@ export class OutcomeService {
         const proof: OutcomeVerification = { id: check.id, receiptId: randomUUID(), status: answer.status, at: this.now(), targetKey: value.targetKey, source: "host_probe", verifier: "host", evidence: answer.evidence.slice(0, 2_000) };
         this.nextProbeAt.set(value.id + ":" + check.id, this.now() + 10_000);
         const previous = value.verification.find(item => item.id === check.id);
+        // Identical current proof retains its original observation time;
+        // explicit verification refreshes it once it genuinely expires.
         if (previous?.targetKey === proof.targetKey && previous.status === proof.status && previous.evidence === proof.evidence && this.now() - previous.at < check.maxAgeMs) continue;
         this.storeProof(value, proof);
         this.write(value);
       }
       return this.get(outcomeId, actor);
-    } finally { this.verifying.delete(outcomeId); }
+    } finally {
+      this.verifying.delete(outcomeId);
+      if (["cancelled", "verified_success", "verified_failure"].includes(this.deps.persistence.get(outcomeId)?.state ?? "")) this.clearProbeSchedule(outcomeId);
+    }
   }
   advance(outcomeId: string, expectedVersion: number, nextTarget: unknown) {
     const value = this.require(outcomeId);

@@ -142,7 +142,7 @@ function loadInstalledPackage(value: unknown): RoutinePackageStamp | undefined {
 
 export interface RoutineRun {
   id: string;
-  outcomeVerification?: "pending" | "verified_success" | "verified_failure";
+  outcomeVerification?: "pending" | "verified_success" | "verified_failure" | "cancelled";
   routineId: string;
   routineName: string;
   /** Snapshot the work so an edited/deleted definition cannot rewrite history. */
@@ -325,7 +325,7 @@ export interface RoutineManagerOptions {
   /** A successful provider turn is intermediate while its peer work or
    * queued continuation still belongs to this detached execution. */
   hasPendingDelegations?: (threadId: string) => boolean;
-  outcomeStatus?: (threadId: string) => { state: "pending" | "verified_success" | "verified_failure"; reason: string } | null;
+  outcomeStatus?: (threadId: string) => { state: "pending" | "verified_success" | "verified_failure" | "cancelled"; reason: string } | null;
 }
 
 const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
@@ -832,7 +832,7 @@ export class RoutineManager {
               ...run,
               target,
               goalStatus: loadGoalStatus(run.goalStatus, target),
-              outcomeVerification: ["pending", "verified_success", "verified_failure"].includes(run.outcomeVerification ?? "") ? run.outcomeVerification : undefined,
+              outcomeVerification: ["pending", "verified_success", "verified_failure", "cancelled"].includes(run.outcomeVerification ?? "") ? run.outcomeVerification : undefined,
               groupId: loadGroupId(run.groupId, target),
               runOn: run.runOn ?? "maus",
               timeoutMinutes: loadTimeoutMinutes(run.timeoutMinutes),
@@ -881,7 +881,7 @@ export class RoutineManager {
     // A local process cannot still own these turns after a full restart.
     const recovered: RoutineRun[] = [];
     for (const run of this.runs) {
-      if (run.status === "waiting" && run.outcomeVerification === "pending") continue;
+      if (run.status === "waiting" && ["pending", "verified_success"].includes(run.outcomeVerification ?? "")) continue;
       if (run.status === "running" || run.status === "waiting") {
         run.status = "failed";
         if (run.target === "room-goal") run.goalStatus = "failed";
@@ -1449,6 +1449,9 @@ export class RoutineManager {
     this.ticking = true;
     try {
       const now = this.now();
+      // A durable proof wait survives the provider process. Reconcile on
+      // restart and after delegated work settles even without a new receipt.
+      for (const run of this.runs) if (run.status === "waiting" && ["pending", "verified_success"].includes(run.outcomeVerification ?? "") && run.threadId) this.reconcileOutcome(run.threadId);
       for (const run of this.runs) {
         if (
           !["running", "waiting"].includes(run.status) ||
@@ -1705,11 +1708,15 @@ export class RoutineManager {
       const outcome = this.options.outcomeStatus?.(event.threadId);
       const outcomeReason = outcome ? redactSecretsInText(outcome.reason).trim().slice(0, 500) : undefined;
       run.outcomeVerification = outcome?.state;
-      run.status = outcome?.state === "verified_failure" ? "failed" : pending || outcome?.state === "pending" ? "waiting" : "completed";
+      if (outcome?.state === "verified_failure") {
+        this.failRun(run, outcome.reason);
+        queueMicrotask(() => void this.tick());
+        return cloneRun(run);
+      }
+      run.status = outcome?.state === "cancelled" ? "cancelled" : pending || outcome?.state === "pending" ? "waiting" : "completed";
       run.attention = outcome?.state === "pending" ? outcomeReason || undefined : pending ? "Waiting for delegated work to finish" : undefined;
       if (run.status !== "waiting") run.finishedAt = this.now();
       run.error = undefined;
-      if (run.status === "failed") run.error = outcomeReason;
     } else {
       return null;
     }
@@ -1722,18 +1729,23 @@ export class RoutineManager {
   /** A settled provider does not need another model turn to finish its
    * registered proof lifecycle. This never creates a new routine/chat. */
   reconcileOutcome(threadId: string): void {
-    const run = this.runs.find(value => value.threadId === threadId && value.status === "waiting" && value.outcomeVerification === "pending");
+    const run = this.runs.find(value => value.threadId === threadId && value.status === "waiting" && ["pending", "verified_success"].includes(value.outcomeVerification ?? ""));
     if (!run) return;
     const outcome = this.options.outcomeStatus?.(threadId);
-    if (!outcome || outcome.state === "pending" || this.options.hasPendingDelegations?.(threadId)) return;
+    if (!outcome || outcome.state === "pending") return;
+    if (outcome.state === "verified_failure") {
+      run.outcomeVerification = outcome.state;
+      this.failRun(run, outcome.reason); queueMicrotask(() => void this.tick()); return;
+    }
+    if (outcome.state === "verified_success" && this.options.hasPendingDelegations?.(threadId)) return;
     run.outcomeVerification = outcome.state;
-    if (outcome.state === "verified_failure") { this.failRun(run, outcome.reason); return; }
-    run.status = outcome.state === "verified_success" ? "completed" : "failed";
-    run.error = run.status === "failed" ? outcome.reason : undefined;
+    run.status = outcome.state === "cancelled" ? "cancelled" : "completed";
+    run.error = undefined;
     run.attention = undefined;
     run.finishedAt = this.now();
     this.save();
     this.emitRun(run);
+    queueMicrotask(() => void this.tick());
   }
 
   failThread(threadId: string, message: string) {

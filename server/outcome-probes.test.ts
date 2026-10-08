@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +18,27 @@ const folder = () => { const value = mkdtempSync(join(tmpdir(), "outcome-probes-
 const outcome = { target: { revision: "actual-current-revision", environment: "actual-live-path" } } as WorkOutcome;
 
 describe("independent postcondition probes", () => {
+  it("requires the actual candidate revision and a clean checkout, including staged and untracked files", async () => {
+    const root = folder();
+    const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" });
+    git("init", "--quiet"); git("config", "user.email", "fixture@example.invalid"); git("config", "user.name", "Outcome fixture");
+    writeFileSync(join(root, "candidate.txt"), "registered candidate");
+    git("add", "candidate.txt"); git("-c", "commit.gpgSign=false", "commit", "--quiet", "-m", "Registered candidate");
+    const revision = git("rev-parse", "HEAD").trim();
+    const registered = { ...outcome, target: { ...outcome.target, revision } };
+    const check = { id: "candidate", kind: "git_head" as const, description: "Exact tested candidate", maxAgeMs: 5_000 };
+    expect((await probeOutcome(outcome, check, { cwd: root, host: true })).status).toBe("fail");
+    expect((await probeOutcome(registered, check, { cwd: root, host: true })).status).toBe("pass");
+    writeFileSync(join(root, "candidate.txt"), "unverified changes");
+    expect((await probeOutcome(registered, check, { cwd: root, host: true })).status).toBe("fail");
+    git("add", "candidate.txt");
+    expect((await probeOutcome(registered, check, { cwd: root, host: true })).status).toBe("fail");
+    git("restore", "--staged", "--worktree", "candidate.txt");
+    writeFileSync(join(root, "extra.txt"), "unverified new file");
+    expect((await probeOutcome(registered, check, { cwd: root, host: true })).status).toBe("fail");
+    unlinkSync(join(root, "extra.txt"));
+    expect((await probeOutcome(registered, check, { cwd: root, host: true })).status).toBe("pass");
+  });
   it("checks the actual bytes in the registered task folder, not a model claim or another folder", async () => {
     const root = folder(); const other = folder(); const content = "required artifact";
     const check = { id: "artifact", kind: "artifact" as const, description: "Expected output", path: "artifact.txt", sha256: createHash("sha256").update(content).digest("hex"), maxAgeMs: 5_000 };

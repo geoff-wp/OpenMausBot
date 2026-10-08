@@ -25,7 +25,8 @@ Registered checks are deliberately narrow:
   must have the expected SHA256. Symlinks, traversal and oversized files do
   not become passes. A guest resource is never replaced by the host folder.
 - `git_head`: the actual registered host workspace HEAD must match the target
-  revision.
+  revision and have no staged, modified or untracked files. Matching the commit
+  alone does not verify changed working files as the registered candidate.
 - `github_pr`: the live PR head and every configured required check must
   match/succeed. Missing or running checks are pending, never success.
 - `http_json`: read the exact configured URL and parameters, without redirects,
@@ -77,7 +78,9 @@ snapshots, fifty at a time.
 
 Native bot closure is refused for registered operational tasks whose required
 current proof has not passed. Registered routine runs remain waiting after a
-successful provider turn and settle when actual proof arrives. Waiting carries
+successful provider turn and settle when actual proof arrives. The original
+proof wait survives restart; explicitly cancelling all registered outcomes
+settles the run as cancelled, never completed. Waiting carries
 the owner, reason, next action, resume trigger and last meaningful progress;
 tokens and repeated unchanged checks do not reset that clock. Warnings never
 impose a QA duration cutoff or automatically retry a person's denial.
@@ -97,15 +100,15 @@ access or replace repository-side release checks.
 ## Permanent isolated checks
 
 ```sh
-pnpm exec vitest run server/outcomes.test.ts server/outcome-probes.test.ts server/outcome-persistence.test.ts server/outcomes.e2e.test.ts src/components/StatusActivityRow.outcomes.test.ts
+pnpm exec vitest run server/outcomes.test.ts server/outcome-probes.test.ts server/outcome-persistence.test.ts server/outcomes.e2e.test.ts server/routines.test.ts server/drivers/agents-outcomes.test.ts src/components/StatusActivityRow.outcomes.test.ts
 pnpm exec tsc -p tsconfig.server.json --noEmit
 ```
 
 The end-to-end suite launches the prescribed disposable `control-omb` server
 and fake CLI only. It proves delivery before producer settlement, exact receiving
 request pickup, no magic phrase, deduplicated publication, a failed actual
-artifact despite claimed PASS, native refusal to mint verifier receipts, and
-retained failure history. Its exact requests and outcome snapshots are retained
+artifact despite claimed PASS, refused premature closure, native refusal to
+mint verifier receipts, and retained failure history. Its exact requests and outcome snapshots are retained
 beside the fixture log as `.log.outcomes.json`. It does not contact real models,
 PowerPM or the user's running app.
 

@@ -113,6 +113,75 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
+describe("registered operational proof for scheduled runs", () => {
+  const completion = { eventId: "provider-settled", provider: "fake", threadId: "thread-1", createdAt: "2026-10-07T20:00:00.000Z", type: "turn.completed" as const, ok: true };
+  const startRun = async (h: ReturnType<typeof harness>) => {
+    const routine = h.manager.create({ name: "Verified fixture", prompt: "Produce and verify the requested artifact", botId: "maus-1", schedule: { type: "interval", everyMinutes: 5, anchorAt: Date.parse(completion.createdAt) } });
+    h.manager.runNow(routine.id); await h.manager.tick();
+    expect(h.started).toHaveLength(1);
+  };
+
+  it("keeps a successful provider turn waiting across restart and finishes only when proof arrives", async () => {
+    const h = harness();
+    let state: "pending" | "verified_success" = "pending";
+    h.options.outcomeStatus = () => ({ state, reason: "Actual registered artifact check is pending" });
+    await startRun(h);
+    h.manager.handleRuntimeEvent(completion);
+    expect(h.manager.listRuns()[0]).toMatchObject({ status: "waiting", outcomeVerification: "pending" });
+    expect(h.manager.listRuns()[0].finishedAt).toBeUndefined();
+    const reloaded = new RoutineManager(h.options);
+    expect(reloaded.listRuns()[0].status).toBe("waiting");
+    expect(h.failed).toEqual([]);
+    state = "verified_success"; await reloaded.tick();
+    expect(reloaded.listRuns()[0]).toMatchObject({ status: "completed", outcomeVerification: "verified_success" });
+    expect(h.started).toHaveLength(1);
+  });
+
+  it.each(["before provider settlement", "after provider settlement"])("records and notifies verified failure %s with a bounded redacted reason", async timing => {
+    const h = harness();
+    let state: "pending" | "verified_failure" = timing === "before provider settlement" ? "verified_failure" : "pending";
+    const secret = `sk-ant-api03-${"abcdefghijklmnopqrstuvwxyz0123456789"}`;
+    h.options.outcomeStatus = () => ({ state, reason: "Required check failed " + secret + " " + "x".repeat(600) });
+    await startRun(h); h.manager.handleRuntimeEvent(completion);
+    if (state === "pending") {
+      expect(h.failed).toEqual([]);
+      state = "verified_failure"; h.manager.reconcileOutcome("thread-1");
+    }
+    const run = h.manager.listRuns()[0];
+    expect(run).toMatchObject({ status: "failed", outcomeVerification: "verified_failure" });
+    expect(run.error).toHaveLength(500);
+    expect(run.error).not.toContain(secret);
+    expect(h.failed).toHaveLength(1);
+    expect(JSON.parse(readFileSync(h.options.file!, "utf8")).runs[0].status).toBe("failed");
+    h.manager.reconcileOutcome("thread-1"); expect(h.failed).toHaveLength(1);
+  });
+
+  it.each(["pending", "verified_success"] as const)("keeps %s proof waiting for delegated work across restart and reconciles without another receipt", async initial => {
+    const h = harness();
+    let state: "pending" | "verified_success" = initial;
+    let delegated = true;
+    h.options.outcomeStatus = () => ({ state, reason: "Registered checks" });
+    h.options.hasPendingDelegations = () => delegated;
+    await startRun(h); h.manager.handleRuntimeEvent(completion);
+    const reloaded = new RoutineManager(h.options);
+    state = "verified_success"; await reloaded.tick();
+    expect(reloaded.listRuns()[0].status).toBe("waiting");
+    delegated = false; await reloaded.tick();
+    expect(reloaded.listRuns()[0].status).toBe("completed");
+    expect(h.started).toHaveLength(1);
+  });
+
+  it("settles explicit cancellation without claiming success or starting another model turn", async () => {
+    const h = harness();
+    let state: "pending" | "cancelled" = "pending";
+    h.options.outcomeStatus = () => ({ state, reason: "All registered outcomes were cancelled" });
+    await startRun(h); h.manager.handleRuntimeEvent(completion);
+    state = "cancelled"; h.manager.reconcileOutcome("thread-1");
+    expect(h.manager.listRuns()[0]).toMatchObject({ status: "cancelled", outcomeVerification: "cancelled" });
+    expect(h.failed).toEqual([]); expect(h.started).toHaveLength(1);
+  });
+});
+
 describe("bounded scheduled overlap and run health", () => {
   const start = Date.parse("2026-09-13T08:00:00Z");
   const input = () => ({ name: "Health check", prompt: "Check the fixture", botId: "maus-1",

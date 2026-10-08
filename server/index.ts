@@ -11286,8 +11286,10 @@ _loadPending();
 
 routines = new RoutineManager({
   outcomeStatus: threadId => {
-    const records = outcomeRuntime.service.list(threadId).filter(value => value.state !== "cancelled");
-    if (!records.length) return null;
+    const all = outcomeRuntime.service.list(threadId);
+    if (!all.length) return null;
+    const records = all.filter(value => value.state !== "cancelled");
+    if (!records.length) return { state: "cancelled" as const, reason: "All registered operational outcomes were explicitly cancelled" };
     const failed = records.find(value => value.state === "verified_failure");
     const pending = records.find(value => value.state !== "verified_success");
     return { state: failed ? "verified_failure" as const : pending ? "pending" as const : "verified_success" as const, reason: (failed ?? pending)?.waiting?.reason ?? "All registered current checks verified" };

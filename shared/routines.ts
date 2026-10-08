@@ -139,7 +139,7 @@ export interface RoutineRun {
   finishedAt?: number;
   output?: string;
   /** Registered operational proof, independent of provider settlement. */
-  outcomeVerification?: "pending" | "verified_success" | "verified_failure";
+  outcomeVerification?: "pending" | "verified_success" | "verified_failure" | "cancelled";
   error?: string;
   /** Concise, redacted question or approval reason while status is waiting. */
   attention?: string;
