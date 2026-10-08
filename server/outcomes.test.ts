@@ -186,6 +186,16 @@ describe("host-owned operational outcomes", () => {
     expect(service.listForRoutine(producer.threadId, "second-run")).toHaveLength(2);
   });
 
+  it("provides retrieval of every requirement when the system preview is bounded", () => {
+    for (let i = 0; i < 21; i++) service.register(definition({ id: "requirement-" + i }));
+    const records = service.listForActor(producer);
+    expect(records).toHaveLength(21);
+    expect(records[20].id).toBe("requirement-20");
+    const prompt = outcomeInstructions(records, producer.threadId);
+    expect(prompt).toContain("20 of 21 requirements");
+    expect(prompt).toContain("get_outcome with no outcome_id");
+  });
+
   it("does not poll terminal checks or create new receipt versions for unchanged current proof", async () => {
     service.register(definition({ checks: [{ id: "file", kind: "artifact", path: "required.txt", sha256: "a".repeat(64), description: "Actual artifact", maxAgeMs: 5_000 }] }));
     publish(); await service.verify("operational-work");
