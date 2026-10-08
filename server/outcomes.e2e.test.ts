@@ -61,6 +61,9 @@ describe("operational outcomes through the actual isolated server", () => {
     await control(["send", "--bot", producer.botId, "--task", producer.threadId, "--text", "Produce the registered result and remain at the fixture gate."]);
     const launched = await dump(producer.threadId);
     expect(launched.mcpConfig.mcpServers.agents.env.OMB_OUTCOMES_ENABLED).toBe("1");
+    expect(launched.systemPrompt).toContain("Registered operational requirements");
+    expect(launched.systemPrompt).toContain(registered.id);
+    expect(launched.systemPrompt).toContain(registered.attemptId);
     const context = toolCallContextFromEnv(launched.mcpConfig.mcpServers.agents.env);
     const publication = await callTool("publish_result", { outcome_id: registered.id, attempt_id: registered.attemptId, result_id: "real-result", revision: "candidate-1", environment: "isolated", verdict: "FAIL", summary: "A scoped defect needs repair", evidence_json: JSON.stringify({ actual: "failed", case: "required-case", count: 1 }) }, context);
     expect(publication.isError).not.toBe(true);

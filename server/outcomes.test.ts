@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { normalizeOutcomeEvidence, OutcomeError, OutcomeService } from "./outcomes.ts";
+import { normalizeOutcomeEvidence, OutcomeError, OutcomeService, outcomeInstructions } from "./outcomes.ts";
 import type { OutcomeDefinition, WorkOutcome } from "../shared/outcomes.ts";
 
 describe("host-owned operational outcomes", () => {
@@ -152,6 +152,19 @@ describe("host-owned operational outcomes", () => {
     expect(value.delivery?.error).toBeUndefined();
     expect(value.consumption?.messageId).toBe("receiving-message");
     await service.drain(); expect(effects).toBe(1);
+  });
+
+  it("informs enrolled turns of their exact native contract without promoting result prose to system instructions", () => {
+    service.register(definition());
+    publish({ summary: "UNTRUSTED_SUMMARY", evidence: "UNTRUSTED_EVIDENCE" });
+    const value = service.get("operational-work");
+    const text = outcomeInstructions([value], producer.threadId);
+    expect(text).toContain(value.id); expect(text).toContain(value.attemptId);
+    expect(text).toContain('"role":"producer"'); expect(text).toContain("publish_result");
+    expect(text).not.toContain("UNTRUSTED_SUMMARY"); expect(text).not.toContain("UNTRUSTED_EVIDENCE");
+    expect(outcomeInstructions([{ ...value, state: "cancelled" }], producer.threadId)).toBe("");
+    const handoff = { ...value, recipient };
+    expect(outcomeInstructions([handoff], recipient.threadId)).toContain('"role":"recipient"');
   });
 
   it("does not poll terminal checks or create new receipt versions for unchanged current proof", async () => {

@@ -60,6 +60,22 @@ const equalParty = (a: OutcomeParty, b: OutcomeParty) => a.botId === b.botId && 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 export const outcomeTargetKey = (value: OutcomeTarget) => hash(JSON.stringify([value.revision, value.environment, value.configuration ?? null]));
 
+/** Only administrator-defined requirements and host facts enter the system
+ * prompt. Producer summaries and evidence remain untrusted reported data. */
+export function outcomeInstructions(records: WorkOutcome[], threadId: string): string {
+  const active = records.filter(value => value.state !== "cancelled");
+  if (!active.length) return "";
+  const contracts = active.slice(0, 20).map(value => ({
+    outcome_id: value.id, attempt_id: value.attemptId,
+    role: value.producer.threadId === threadId ? "producer" : "recipient",
+    target: value.target, state: value.state,
+    required_checks: value.checks.map(check => ({ id: check.id, kind: check.kind, description: check.description })),
+    first_work: value.firstWork,
+  }));
+  return "\nRegistered operational requirements for this conversation:\n" + JSON.stringify(contracts) +
+    "\nRead get_outcome for the current ids, requirements and result. Producers must use publish_result as soon as actual evidence is ready, even while their turn continues. Preserve structured evidence; a legacy result file or ordinary final reply does not publish this registered result. Recipients must consume the exact delivered result and perform its declared first-work action in the receiving request. verify_outcome runs the declared host checks. Report the host's actual state; a model PASS, ended turn, acknowledgment or delivered message does not prove the requested outcome. End your turn honestly when blocked; do not close unverified operational work. Existing permission and release protections still apply.";
+}
+
 /** Preserve supported evidence shapes; a malformed publication fails in the
  * producer's tool call, before any handoff or completion decision. */
 export function normalizeOutcomeEvidence(raw: unknown): string {

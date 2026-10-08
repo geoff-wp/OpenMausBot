@@ -10741,6 +10741,7 @@ async function startTurn(
         { id: "coordination", label: "Team", text: coordinationPrompt ? ` ${coordinationPrompt}` : "" },
         { id: "assignment", label: "Teammate task", text: coordinationNode ? `\n${coordinationSystemInstructions()}` : "" },
         { id: "outstanding", label: "Outstanding teammate work", text: outstandingAssignmentsPrompt(threadId) },
+        { id: "operational-outcomes", label: "Registered operational requirements", text: integrations.agents ? outcomeRuntime.instructions(threadId) : "" },
         { id: "credential", label: "Credentials", text: credentialPrompt },
         { id: "recall", label: "Recall", text: recallPrompt },
         { id: "routine", label: "Routines", text: routinePrompt },
@@ -13167,6 +13168,7 @@ async function runGroupMemberTurn(
     { id: "recent", label: "Recent work", text: recentWorkPrompt(recentLines) },
     { id: "section-context", label: "Section context", text: sectionContextSystemPrompt(bot.section) },
     { id: "team-memory", label: "Team memory", text: teamMemory.systemPrompt(bot.section) + (integrations.agents ? TEAM_MEMORY_PROMPT : "") },
+    { id: "operational-outcomes", label: "Registered operational requirements", text: integrations.agents ? outcomeRuntime.instructions(threadId) : "" },
     // the room path has always put a newline before memory and trimmed
     // the block's leading space; keep that so existing prompts are
     // byte-identical. The write guidance follows the tools actually

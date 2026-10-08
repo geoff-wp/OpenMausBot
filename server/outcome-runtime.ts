@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { OutcomeActor } from "./outcomes.ts";
-import { OutcomeService } from "./outcomes.ts";
+import { OutcomeService, outcomeInstructions } from "./outcomes.ts";
 import { readWorkOutcome, saveWorkOutcome, workOutcomes, workOutcomeHistory } from "./message-db.ts";
 import { probeOutcome } from "./outcome-probes.ts";
 import { createOutcomeRoutes } from "./routes/outcomes.ts";
@@ -52,5 +52,5 @@ export function createOutcomeRuntime(deps: OutcomeRuntimeDeps) {
   };
   const timer = setInterval(() => { void tick(); }, 5_000);
   timer.unref();
-  return { service, routes, tick, stop: () => clearInterval(timer) };
+  return { service, routes, tick, instructions: (threadId: string) => outcomeInstructions(service.list(threadId), threadId), stop: () => clearInterval(timer) };
 }
