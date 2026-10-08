@@ -1579,8 +1579,9 @@ describe("peer wake helpers", () => {
   it("buildDelegationRevivalPrompt names the peer and instructs the source to answer", () => {
     const prompt = buildDelegationRevivalPrompt("Helper");
     expect(prompt).toContain("@Helper");
-    expect(prompt).toContain("answer the user with the outcome");
-    expect(prompt).toContain("Do not re-delegate the same task");
+    expect(prompt).toContain("verify the required postconditions before claiming success");
+    expect(prompt).toContain("does not independently verify");
+    expect(prompt).toContain("do not re-delegate the same task unchanged");
   });
 
   it("buildDelegationFailurePrompt carries the reason and forbids an unchanged retry", () => {

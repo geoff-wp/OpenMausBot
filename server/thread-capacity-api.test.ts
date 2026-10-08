@@ -402,10 +402,10 @@ describe("per-bot thread capacity through an isolated HTTP fixture", () => {
       // the run recorded this same wake reply
       expect(reply.startsWith((await runState(turn.runId)).output)).toBe(true);
       const peerReply = reply.indexOf("@Capacity fixture replied to the delegated task");
-      const notice = reply.lastIndexOf("[A delegated task just completed]");
+      const notice = reply.lastIndexOf("[A delegated reply arrived]");
       expect(peerReply).toBeGreaterThan(-1);
       expect(notice).toBeGreaterThan(peerReply);
-      expect(reply.slice(notice)).toMatch(/^\[A delegated task just completed\]\n\nThe task you delegated to @Capacity fixture has finished, and their reply is now in this conversation\.\n\n[^]*Do not re-delegate the same task\.$/);
+      expect(reply.slice(notice)).toContain("does not independently verify the requested outcome");
     };
     try {
       // One busy thread, one free slot: when the delegator's turn settles

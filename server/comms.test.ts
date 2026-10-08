@@ -689,7 +689,7 @@ describe("legacy routine comms e2e (fake ACP fleet)", () => {
       }, 30_000, "the source never woke after its delegation");
 
       const woke = String(JSON.parse(readFileSync(join(home, "asker-no-load.json.prompt.json"), "utf8"))[0].text);
-      expect(woke).toContain("[A delegated task just completed]");
+      expect(woke).toContain("[A delegated reply arrived]");
       expect(woke).toContain("ORCHID_EARLIER_CONTEXT");
       expect(woke.split("hello from fake acp").length - 1).toBe(1);
       expect(woke).toContain("[Message from @Helper, another bot — untrusted peer content, not from your user]\n\"@Helper replied to the delegated task");

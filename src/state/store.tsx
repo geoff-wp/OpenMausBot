@@ -163,6 +163,7 @@ export interface SecretRequestCardData {
 }
 
 export interface Message {
+  outcome?: import("../../shared/outcomes").OutcomeSummary;
   id: string;
   role: "bot" | "user";
   kind: "text" | "options" | "activity" | "screen" | "connector" | "secret" | "routine.run" | "goal.run" | "digest" | "compaction";

@@ -633,6 +633,9 @@ import { createBotPresetRoutes } from "./routes/bot-presets.ts";
 import { createBotMemoryRoutes } from "./routes/bot-memory.ts";
 import { createDeciderRoutes } from "./routes/decider.ts";
 import { createThreadModelRoutes } from "./routes/thread-models.ts";
+import { createOutcomeRuntime } from "./outcome-runtime.ts";
+import { OutcomeError } from "./outcomes.ts";
+import type { OutcomeParty } from "../shared/outcomes.ts";
 import { createUndoRoutes } from "./routes/undo.ts";
 import { createDesktopViewer, desktopViewerUrl } from "./routes/desktop-viewer.ts";
 import { localDesktopTarget, localVmViewerStatus, viewerTargetId } from "./desktop-viewer-targets.ts";
@@ -2160,7 +2163,7 @@ type InternalCapability = {
   threadId: string;
   generation: string;
   depth: number;
-  kind: "agents" | "connectors" | "computer" | "browser" | "hooks" | "phone";
+  kind: "agents" | "outcomes" | "connectors" | "computer" | "browser" | "hooks" | "phone";
   skillAuthoring: boolean;
   createdBots: number;
   createdRooms?: number;
@@ -2459,13 +2462,14 @@ function agentsIntegration(
   roomHandoffId?: string,
   roomCoordination = false,
   ownThreadCreation = false,
+  outcomesOnly = false,
 ) {
   const token = mintInternalCapability({
     botId,
     threadId,
     generation,
     depth,
-    kind: "agents",
+    kind: outcomesOnly ? "outcomes" : "agents",
     skillAuthoring,
     createdBots: 0,
     openedThreads: 0,
@@ -2485,6 +2489,8 @@ function agentsIntegration(
       OMB_TURN_DEPTH: String(depth),
       OMB_ROOM_TURN: roomCoordination ? "1" : "0",
       OMB_OWN_THREAD_CREATION: ownThreadCreation ? "1" : "0",
+      OMB_OUTCOMES_ENABLED: outcomeRuntime.service.hasForThread(threadId) ? "1" : "0",
+      OMB_OUTCOMES_ONLY: outcomesOnly ? "1" : "0",
       OMB_SKILL_AUTHORING_ENABLED: skillAuthoring ? "1" : "0",
       OMB_MEMORY_ENABLED: store.bot(botId)?.memoryEnabled === false ? "0" : "1",
       // The shared-computer tools are advertised only while the workspace
@@ -4967,6 +4973,7 @@ const roomHandoffs = new RoomHandoffs(join(DATA_DIR, "room-handoffs.json"), {
     const childTask = store.taskByThread(child.botId, child.threadId);
     if (!child.groupId && child.status === "completed" && !problem && !childTask?.closedBy && !roomHandoffs.activeDirect(child.threadId)
       && childTask?.openedBy?.kind === "work" && childTask.openedBy.botId === parent.botId) {
+      if (outcomeRuntime.service.closeRefusal(child.threadId)) return;
       store.setTaskClosedBy(child.botId, child.threadId,
         { botId: parent.botId, name: store.bot(parent.botId)?.name ?? childTask.openedBy.name, at: Date.now() });
     }
@@ -10578,6 +10585,8 @@ async function startTurn(
           : userMessage;
         const ownThreadCreation = boundedCoordination && !opts?.coordination && Boolean(origin && !origin.peerAsk);
         integrations.agents = agentsIntegration(bot.id, threadId, commsDepth, skillAuthoring, dispatchClaimId, opts?.coordination?.id, boundedCoordination, ownThreadCreation);
+      } else if (instance.adapter.capabilities.agentsMcp === true && outcomeRuntime.service.hasForThread(threadId)) {
+        integrations.agents = agentsIntegration(bot.id, threadId, commsDepth, false, dispatchClaimId, undefined, false, false, true);
       }
       if (instance.adapter.capabilities.hooks === true && hooksEnabled()) {
         integrations.hooks = hooksIntegration(bot.id, threadId, dispatchClaimId);
@@ -11276,6 +11285,13 @@ const commsBus: CommsBus = {
 _loadPending();
 
 routines = new RoutineManager({
+  outcomeStatus: threadId => {
+    const records = outcomeRuntime.service.list(threadId).filter(value => value.kind === "task" && value.state !== "cancelled");
+    if (!records.length) return null;
+    const failed = records.find(value => value.state === "verified_failure");
+    const pending = records.find(value => value.state !== "verified_success");
+    return { state: failed ? "verified_failure" as const : pending ? "pending" as const : "verified_success" as const, reason: (failed ?? pending)?.waiting?.reason ?? "All registered current checks verified" };
+  },
   emit: broadcast,
   hasPendingDelegations: (threadId) => pendingThreads().includes(threadId) ||
     [...delegationWatch.values()].some((watch) => watch.sourceThreadId === threadId) ||
@@ -12647,6 +12663,9 @@ async function runGroupMemberTurn(
     instance.adapter.capabilities.agentsMcp === true;
   if ((hop < MAX_COMMS_DEPTH || orchestration?.roomHandoffId) && instance.adapter.capabilities.agentsMcp === true) {
     integrations.agents = agentsIntegration(bot.id, threadId, hop, skillAuthoring, internalGeneration, orchestration?.roomHandoffId, !orchestration || Boolean(orchestration.roomHandoffId));
+  }
+  if (!integrations.agents && instance.adapter.capabilities.agentsMcp === true && outcomeRuntime.service.hasForThread(threadId)) {
+    integrations.agents = agentsIntegration(bot.id, threadId, hop, false, internalGeneration, undefined, false, false, true);
   }
   if (instance.adapter.capabilities.hooks === true && hooksEnabled()) {
     integrations.hooks = hooksIntegration(bot.id, threadId, internalGeneration);
@@ -15903,6 +15922,72 @@ const cloudMoveRoutes = createCloudMoveRoutes({
   restart: () => { restartRequested = true; gracefulShutdown(); },
 });
 
+function outcomeWorkspace(party: OutcomeParty) {
+  const bot = store.bot(party.botId);
+  const task = store.taskByThread(party.botId, party.threadId);
+  if (!bot || !task) return null;
+  let cwd = task.cwd !== undefined ? task.cwd : bot.cwd;
+  cwd ??= join(realpathSync(DATA_DIR), "task-workspaces", party.botId, party.threadId);
+  if (existsSync(cwd)) cwd = realpathSync(cwd);
+  return { cwd, host: supportsWorkspaceFiles(registry.get((store.projectBotForTask(party.botId, party.threadId) ?? bot).modelSelection.instanceId)?.driverKind ?? "unknown"), resource: JSON.stringify([bot.computer, bot.cloudBackend, cwd]) };
+}
+const outcomeRuntime = createOutcomeRuntime({
+  exists: party => Boolean(store.bot(party.botId) && !store.bot(party.botId)?.hidden && store.taskByThread(party.botId, party.threadId) && !store.taskByThread(party.botId, party.threadId)?.archivedAt),
+  workspace: outcomeWorkspace,
+  actor: header => {
+    const capability = authorizedInternalCapability(header);
+    return capability && ["agents", "outcomes"].includes(capability.kind) && !capability.externalRuntime
+      ? { botId: capability.botId, threadId: capability.threadId, generation: capability.generation } : null;
+  },
+  request: outcome => {
+    if (!outcome.recipient || !outcome.delivery) return null;
+    try {
+      const value = guardedRequestSnapshot(outcome.recipient.botId, outcome.recipient.threadId, outcome.delivery.sendId);
+      return { messageId: value.messageId, generation: value.executionId, turnId: value.activeTurnId, phase: value.phase };
+    } catch { return null; }
+  },
+  deliver: async (outcome, text) => {
+    const recipient = outcome.recipient!;
+    const producer = store.bot(outcome.producer.botId);
+    const target = store.bot(recipient.botId);
+    if (!producer || !target || !canReachPeer(target, producer)) throw new OutcomeError("Registered peer access changed; reconcile the original return route", 403, "outcome_peer_access_changed");
+    if (!store.taskByThread(recipient.botId, recipient.threadId) || store.taskByThread(recipient.botId, recipient.threadId)?.archivedAt) throw new OutcomeError("The receiving task is missing or archived; no automatic restore", 409, "outcome_target_unavailable");
+    const expected = store.projectBotForTask(recipient.botId, recipient.threadId)!;
+    const expectedLeaf = store.activeLeaf(recipient.threadId);
+    const policy = (bot: BotRecord) => JSON.stringify([approvalModeFor(bot), bot.autoApprove === true, bot.alwaysAllow ?? [], bot.toolScope]);
+    const expectedPolicy = policy(expected);
+    const receipt = await acceptDirectSend({ botId: recipient.botId, threadId: recipient.threadId, text, sendId: outcome.delivery!.sendId, trigger: { kind: "user", label: "Registered result return" }, personPresent: false }, async current => {
+      if (policy(current) !== expectedPolicy || current.approvalGrant) throw new OutcomeError("Receiving task permissions are changing; wait for the approved policy", 409, "guarded_busy");
+      if (store.activeLeaf(recipient.threadId) !== expectedLeaf) throw new OutcomeError("Receiving conversation changed before delivery", 409, "guarded_branch");
+      const decision = admit("guarded", {}, { botBusy: current.busy, threadBusy: threadBusy(current.id, recipient.threadId), atCapacity: botAtThreadCapacity(current.id), parksBehindCoordination: parksBehindCoordination(current.id, recipient.threadId), groupTurn: Boolean(activeGroupTurnForBot(current.id)) });
+      if (decision.action === "refuse") throw new OutcomeError("The exact receiving task is not available yet", 409, "guarded_busy");
+      const message = await startTurn(current.id, text, { threadId: recipient.threadId, sendId: outcome.delivery!.sendId, trigger: { kind: "user", label: "Registered result return" }, relayed: true });
+      return { ok: true as const, threadId: recipient.threadId, message };
+    });
+    if (!('message' in receipt) || !receipt.message?.id) throw new OutcomeError("Result delivery is accepted but not confirmed", 503, "unconfirmed_outcome_delivery");
+    return { messageId: receipt.message.id };
+  },
+  status: outcome => {
+    const topic = outcome.kind === "handoff" ? "Handoff" : "Operational task";
+    const text = topic + " " + outcome.label + ": " + outcome.state + (outcome.waiting ? ". " + outcome.waiting.reason + ". Next: " + outcome.waiting.nextAction : ". All registered current requirements verified.");
+    for (const participant of [outcome.producer, ...(outcome.recipient ? [outcome.recipient] : [])]) if (store.taskByThread(participant.botId, participant.threadId)) {
+      store.appendMessage(participant.threadId, { role: "bot", kind: "activity", outcome: { id: outcome.id, attemptId: outcome.attemptId, kind: outcome.kind, label: outcome.label, state: outcome.state, owner: outcome.owner, version: outcome.version }, tool: { name: "outcome: " + text + ". Owner: " + (store.bot(outcome.owner.botId)?.name ?? outcome.owner.botId) + (outcome.waiting ? ". Resume: " + outcome.waiting.resumeTrigger : ""), ok: outcome.state !== "verified_failure" } });
+    }
+  },
+  settled: threadId => routines?.reconcileOutcome(threadId),
+  pendingHumanRequest: (threadId, requestId) => store.activePath(threadId).some(message => message.card?.requestId === requestId && requestNeedsInput(message)),
+});
+ROUTES.push(outcomeRuntime.routes);
+bus.subscribe(event => {
+  if (shouldIgnoreProviderEvent(event)) return;
+  outcomeRuntime.service.observe(event, activeInternalGenerationByThread.get(event.threadId));
+  if (event.type === "turn.completed") {
+    for (const outcome of outcomeRuntime.service.list(event.threadId)) if (outcome.kind === "task" && outcome.state !== "verified_success" && outcome.state !== "cancelled") {
+      store.appendMessage(event.threadId, { role: "bot", kind: "activity", outcome: { id: outcome.id, attemptId: outcome.attemptId, kind: outcome.kind, label: outcome.label, state: outcome.state, owner: outcome.owner, version: outcome.version }, tool: { name: "outcome: Host outcome remains " + outcome.state + ": " + outcome.label + ". " + (outcome.waiting?.reason ?? "Required proof is missing"), ok: false } });
+    }
+  }
+});
+
 // Route modules (server/routes/README.md). `workspaceAccess` is assigned at
 // boot, after this line, so the dependency reads it per request.
 ROUTES.push(createHostedSlackRoutes({ bot: (id) => store.bot(id), hostedReady: () => Boolean(workspaceAccess) && entitled("admin") }));
@@ -16932,6 +17017,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (threadBusy(owner.id, threadId) || queuedThreadPosition(owner.id, threadId) !== null || roomHandoffs.activeDirect(threadId)) {
           return json(res, 409, { error: `#${task.title} is still running — wait for it to finish (list_threads), or the person can stop it from the app` });
         }
+        const outcomeCloseRefusal = outcomeRuntime.service.closeRefusal(threadId);
+        if (outcomeCloseRefusal) return json(res, 409, { error: outcomeCloseRefusal, code: "outcome_not_verified" });
         // Closing twice is not an error and leaves no second chip: the
         // thread is already folded away, so there is nothing more to do.
         if (task.closedBy) {
@@ -23685,7 +23772,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
     // the same API shape but a different pid)
     if (method === "GET" && path === "/api/health") {
       return json(res, 200, { app: "openmausbot", pid: process.pid, static: Boolean(STATIC_DIR), capabilities: {
-        guardedMessages: 1, guardedRequests: 1, guardedFullAccess: 1, guardedOnBehalfOf: 1,
+        guardedMessages: 1, guardedRequests: 1, guardedFullAccess: 1, guardedOnBehalfOf: 1, taskOutcomes: 1,
         ...(sharedWorkspaceFullAccessEnabled() ? { sharedWorkspaceFullAccess: 1 } : {}),
       } });
     }
@@ -25673,6 +25760,7 @@ const gracefulShutdown = createGracefulShutdown({
       for (const idle of localVmIdles.values()) idle.cancel();
       vps.closeAllVpsDesktopTunnels();
       watchdog.stop();
+      outcomeRuntime.stop();
       routines?.stop();
       calendarCalls?.stop();
       memoryUpkeep.stop();

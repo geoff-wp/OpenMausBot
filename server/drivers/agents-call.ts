@@ -398,6 +398,23 @@ function recallWhen(at: unknown, dateOnly: boolean): string {
 }
 
 export async function callTool(name: string, args: Json, context: ToolCallContext): Promise<ToolCallResult> {
+  if (["get_outcome", "publish_result", "consume_result", "verify_outcome"].includes(name)) {
+    const outcomeId = typeof args.outcome_id === "string" ? args.outcome_id.trim() : "";
+    if (outcomeId && !/^[A-Za-z0-9_-]{1,128}$/.test(outcomeId)) return { text: "outcome_id must be a registered outcome id", isError: true };
+    const base = "/api/internal/outcomes" + (outcomeId ? "/" + encodeURIComponent(outcomeId) : "");
+    if (name === "get_outcome") return { text: JSON.stringify(await context.client.api(base)) };
+    if (!outcomeId) return { text: "This operation needs the registered outcome_id", isError: true };
+    let route = "verify";
+    let body: Json = {};
+    if (name === "publish_result") {
+      route = "publish";
+      let evidence: unknown = args.evidence_json;
+      if (typeof evidence === "string") { try { evidence = JSON.parse(evidence); } catch { /* ordinary text is supported */ } }
+      body = { attemptId: args.attempt_id, resultId: args.result_id, target: { revision: args.revision, environment: args.environment, ...(args.configuration ? { configuration: args.configuration } : {}) }, verdict: args.verdict, summary: args.summary, evidence };
+    } else if (name === "consume_result") { route = "consume"; body = { attemptId: args.attempt_id, resultId: args.result_id }; }
+    const result = await context.client.apiResponse(base + "/" + route, { method: "POST", body: JSON.stringify(body) });
+    return { text: JSON.stringify(result.body), ...(!result.ok ? { isError: true } : {}) };
+  }
   // The names this body has always used, so it reads (and diffs) as it did
   // when these were the proxy's module-level constants.
   const { botId: BOT_ID, threadId: THREAD_ID, depth: DEPTH, externalRuntime: EXTERNAL_RUNTIME, coordinating: COORDINATING } = context;
@@ -663,7 +680,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     const query = new URLSearchParams({ fromBotId: BOT_ID, fromThreadId: THREAD_ID, wait_ms: String(waitMs) });
     const r = await api(`/api/internal/delegations/${encodeURIComponent(taskId)}?${query.toString()}`);
     const who = typeof r.toBotName === "string" && r.toBotName ? `@${r.toBotName}` : "the peer";
-    if (r.status === "done") return { text: `${who} finished task ${taskId}:\n${String(r.result || "(no reply text)")}` };
+    if (r.status === "done") return { text: `${who} returned a reply for task ${taskId}. This delivery receipt does not independently verify the requested outcome. Review the reported facts and required checks before claiming completion:\n${String(r.result || "(no reply text)")}` };
     if (r.status === "queued") {
       const why = r.targetStatus === "waiting-on-user"
         ? ` ${who} is waiting on the user, so it goes through after they answer.`

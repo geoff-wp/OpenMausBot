@@ -142,6 +142,7 @@ function loadInstalledPackage(value: unknown): RoutinePackageStamp | undefined {
 
 export interface RoutineRun {
   id: string;
+  outcomeVerification?: "pending" | "verified_success" | "verified_failure";
   routineId: string;
   routineName: string;
   /** Snapshot the work so an edited/deleted definition cannot rewrite history. */
@@ -324,6 +325,7 @@ export interface RoutineManagerOptions {
   /** A successful provider turn is intermediate while its peer work or
    * queued continuation still belongs to this detached execution. */
   hasPendingDelegations?: (threadId: string) => boolean;
+  outcomeStatus?: (threadId: string) => { state: "pending" | "verified_success" | "verified_failure"; reason: string } | null;
 }
 
 const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
@@ -830,6 +832,7 @@ export class RoutineManager {
               ...run,
               target,
               goalStatus: loadGoalStatus(run.goalStatus, target),
+              outcomeVerification: ["pending", "verified_success", "verified_failure"].includes(run.outcomeVerification ?? "") ? run.outcomeVerification : undefined,
               groupId: loadGroupId(run.groupId, target),
               runOn: run.runOn ?? "maus",
               timeoutMinutes: loadTimeoutMinutes(run.timeoutMinutes),
@@ -878,6 +881,7 @@ export class RoutineManager {
     // A local process cannot still own these turns after a full restart.
     const recovered: RoutineRun[] = [];
     for (const run of this.runs) {
+      if (run.status === "waiting" && run.outcomeVerification === "pending") continue;
       if (run.status === "running" || run.status === "waiting") {
         run.status = "failed";
         if (run.target === "room-goal") run.goalStatus = "failed";
@@ -1698,10 +1702,13 @@ export class RoutineManager {
         return cloneRun(run);
       }
       const pending = this.options.hasPendingDelegations?.(event.threadId) === true;
-      run.status = pending ? "waiting" : "completed";
-      run.attention = pending ? "Waiting for delegated work to finish" : undefined;
-      if (!pending) run.finishedAt = this.now();
+      const outcome = this.options.outcomeStatus?.(event.threadId);
+      run.outcomeVerification = outcome?.state;
+      run.status = outcome?.state === "verified_failure" ? "failed" : pending || outcome?.state === "pending" ? "waiting" : "completed";
+      run.attention = outcome?.state === "pending" ? outcome.reason : pending ? "Waiting for delegated work to finish" : undefined;
+      if (run.status !== "waiting") run.finishedAt = this.now();
       run.error = undefined;
+      if (run.status === "failed") run.error = outcome?.reason;
     } else {
       return null;
     }
@@ -1709,6 +1716,22 @@ export class RoutineManager {
     this.emitRun(run);
     if (event.type === "turn.completed") queueMicrotask(() => void this.tick());
     return cloneRun(run);
+  }
+
+  /** A settled provider does not need another model turn to finish its
+   * registered proof lifecycle. This never creates a new routine/chat. */
+  reconcileOutcome(threadId: string): void {
+    const run = this.runs.find(value => value.threadId === threadId && value.status === "waiting" && value.outcomeVerification === "pending");
+    if (!run) return;
+    const outcome = this.options.outcomeStatus?.(threadId);
+    if (!outcome || outcome.state === "pending" || this.options.hasPendingDelegations?.(threadId)) return;
+    run.outcomeVerification = outcome.state;
+    run.status = outcome.state === "verified_success" ? "completed" : "failed";
+    run.error = run.status === "failed" ? outcome.reason : undefined;
+    run.attention = undefined;
+    run.finishedAt = this.now();
+    this.save();
+    this.emitRun(run);
   }
 
   failThread(threadId: string, message: string) {

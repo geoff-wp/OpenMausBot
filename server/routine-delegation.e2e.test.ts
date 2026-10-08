@@ -99,7 +99,7 @@ describe("routine delegation through the isolated harness", () => {
     await expect.poll(async () => (await runState(run.id))?.status, { timeout: 20_000 }).toBe("completed");
     const transcript = await messages(run.threadId);
     expect(transcript.some((message) => message.text?.includes("@Routine peer replied to the delegated task"))).toBe(true);
-    expect((await runState(run.id)).output).toContain("[A delegated task just completed]");
+    expect((await runState(run.id)).output).toContain("[A delegated reply arrived]");
     evidence.push({ waitedForBusyPeer: true, resumedRoutine: run.id, threadId: run.threadId, transcript });
   }, 60_000);
 
@@ -164,7 +164,7 @@ describe("routine delegation through the isolated harness", () => {
       }, { timeout: 15_000 }).toBe(false);
     }
     await expect.poll(async () => (await runState(run.id))?.status, { timeout: 15_000 }).toBe("completed");
-    expect((await runState(run.id)).output).toContain("[A delegated task just completed]");
+    expect((await runState(run.id)).output).toContain("[A delegated reply arrived]");
     const bot = (await api("GET", "/api/bots?messages=0")).bots.find((bot: any) => bot.id === source.id);
     expect(occupiedThreads.map(threadId => bot.tasks.find((task: any) => task.threadId === threadId).busy))
       .toEqual(resume === "raise" ? [true] : [false, true, true]);
@@ -266,7 +266,7 @@ describe("routine delegation through the isolated harness", () => {
     finish(run.threadId);
     await control(["wait", "--bot", source.id, "--task", run.threadId]);
     const transcript = await messages(run.threadId);
-    expect(transcript.some((message) => message.text?.includes("[A delegated task just completed]"))).toBe(false);
+    expect(transcript.some((message) => message.text?.includes("[A delegated reply arrived]"))).toBe(false);
     await expect.poll(async () => (await runState(run.id))?.status, { timeout: 10_000 }).toBe("cancelled");
     evidence.push({ cancelledPeerDidNotResumeNewUserTurn: true, transcript });
   }, 45_000);

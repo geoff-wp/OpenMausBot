@@ -1268,7 +1268,7 @@ describe("agents-proxy MCP surface", () => {
     expect(lastDelegationUrl).toBeNull(); // guidance is free
 
     const done = await callTool("check_delegation", { task_id: "task-earlier123" });
-    expect(done.result.content[0].text).toContain("@Helper finished task task-earlier123");
+    expect(done.result.content[0].text).toContain("@Helper returned a reply for task task-earlier123");
     expect(done.result.content[0].text).toContain("All done.");
     expect(lastDelegationUrl).toContain("/api/internal/delegations/task-earlier123?");
     expect(lastDelegationUrl).toContain("wait_ms=0");

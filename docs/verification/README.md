@@ -45,6 +45,7 @@ Use only mapped, tested commands:
 - [Chat turns](chat-turns.md)
 - [Conversation context compaction](context-compaction.md)
 - [Work summaries and engine hooks](digests.md)
+- [Operational outcomes and durable result handoffs](outcomes.md)
 - [OpenAI-compatible structured tools](openai-tools.md)
 - [Per-bot tool selection and local-model checks](tool-selection.md)
 - [OpenCode model variants through ACP](opencode-variants.md)

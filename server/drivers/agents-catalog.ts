@@ -39,6 +39,8 @@ export interface CatalogProfile {
   chief: boolean;
   /** Written into start_thread's schema in a coordinating turn. */
   botId: string;
+  outcomes?: boolean;
+  outcomesOnly?: boolean;
 }
 
 /** The profile a spawned proxy was given. Everything is off unless the
@@ -56,6 +58,8 @@ export function catalogProfileFromEnv(env: NodeJS.ProcessEnv): CatalogProfile {
     memoryEnabled: env.OMB_MEMORY_ENABLED !== "0",
     chief: env.OMB_CHIEF_OF_STAFF === "1",
     botId: env.OMB_BOT_ID ?? "",
+    outcomes: env.OMB_OUTCOMES_ENABLED === "1",
+    outcomesOnly: env.OMB_OUTCOMES_ONLY === "1",
   };
 }
 
@@ -958,6 +962,7 @@ export function availableTools(profile: CatalogProfile) {
 }
 
 function catalogTools(profile: CatalogProfile) {
+  if (profile.outcomesOnly) return outcomeTools();
   const TOOLS = toolDefinitions(profile.externalRuntime);
   const BOT_SCOPED_TOOLS = TOOLS.filter((tool) =>
     (profile.botId === WATCHER_OPTIONS_CARD_BOT_ID || !WATCHER_TOOL_NAMES.has(tool.name)) &&
@@ -978,7 +983,7 @@ function catalogTools(profile: CatalogProfile) {
       const properties = Object.fromEntries(Object.entries(tool.inputSchema.properties).filter(([key]) => key !== "for_bot_id"));
       return { ...tool, description: tool.description.replace(CHIEF_PROFILE_TARGET, ""), inputSchema: { ...tool.inputSchema, properties } };
     });
-  return profile.externalRuntime
+  const selected = profile.externalRuntime
     ? BOT_SCOPED_TOOLS.filter(tool => EXTERNAL_TOOL_NAMES.has(tool.name))
     : profile.coordinating
     ? ROLE_TOOLS.filter(tool => !ROOM_REPLACED_TOOLS.has(tool.name) || (tool.name === "start_thread" && profile.ownThreadCreation))
@@ -990,4 +995,24 @@ function catalogTools(profile: CatalogProfile) {
         } },
       } : tool)
     : ROLE_TOOLS.filter(tool => !ROOM_ONLY_TOOLS.has(tool.name));
+  return profile.outcomes && !profile.externalRuntime ? [...selected, ...outcomeTools()] : selected;
+}
+
+/** Flat schemas work through every provider's MCP conversion. Publication
+ * and consumption grant no peer, thread-creation or verification authority. */
+export function outcomeTools() {
+  const outcomeId = { type: "string", description: "The registered outcome id from this task's host instructions." };
+  const targetFields = {
+    outcome_id: outcomeId,
+    attempt_id: { type: "string", description: "The current attempt id from get_outcome." },
+    revision: { type: "string", description: "The exact registered commit, deployment or artifact revision." },
+    environment: { type: "string", description: "The exact registered environment." },
+    configuration: { type: "string", description: "The registered configuration fingerprint, when present." },
+  };
+  return [
+    { name: "get_outcome", description: "Read this task's registered operational outcomes and their actual state. Omit outcome_id to list assigned ids. Provider settlement, report publication, delivery, consumption, first work and verified success are distinct facts.", annotations: agentToolAnnotations("get_outcome"), inputSchema: { type: "object", additionalProperties: false, properties: { outcome_id: outcomeId } } },
+    { name: "publish_result", description: "Publish a result immediately, including while this producing turn is active. The host validates the exact registered attempt and target, preserves evidence, and durably delivers to the fixed receiving task. Accepted publication is not verified completion. End your turn honestly when dependencies remain; do not wait for idle or type ceremonial acknowledgments.", inputSchema: { type: "object", additionalProperties: false, properties: { ...targetFields, result_id: { type: "string", description: "Stable id for this exact publication; reuse it only for identical content." }, verdict: { type: "string", enum: ["PASS", "FAIL", "NOT_TESTED", "NEEDS_SETUP", "HUMAN_INTERVENTION"] }, summary: { type: "string", maxLength: 2000 }, evidence_json: { type: "string", maxLength: 20000, description: "Evidence as JSON text (object, array or string), or ordinary observation text. Larger artifacts remain referenced separately." } }, required: ["outcome_id", "attempt_id", "result_id", "revision", "environment", "verdict", "summary", "evidence_json"] } },
+    { name: "consume_result", description: "Accept the exact registered result delivered into this receiving execution. The host records acceptance; sender ownership remains until a matching successful first-work action is observed. This does not grant release authority or certify the producer's claims.", inputSchema: { type: "object", additionalProperties: false, properties: { outcome_id: outcomeId, attempt_id: targetFields.attempt_id, result_id: { type: "string" } }, required: ["outcome_id", "attempt_id", "result_id"] } },
+    { name: "verify_outcome", description: "Run the outcome's predeclared read-only host probes. This cannot change requirements or manufacture a trusted verifier's receipts. Missing, failed, unavailable or stale proof never becomes success. Read and report the returned state; do not substitute a model PASS.", inputSchema: { type: "object", additionalProperties: false, properties: { outcome_id: outcomeId }, required: ["outcome_id"] } },
+  ];
 }

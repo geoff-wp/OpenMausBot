@@ -20,6 +20,7 @@ import type { ResolvedSender, SteerQueueReason } from "../shared/wire.ts";
 import type { Message } from "./store.ts";
 import type { UsageTrigger } from "./usage-ledger.ts";
 import { MessageSearchWorker } from "./message-search-worker.ts";
+import type { WorkOutcome } from "../shared/outcomes.ts";
 import { searchMessagesInDatabase, type SearchHit } from "./message-search-query.ts";
 export type { SearchHit } from "./message-search-query.ts";
 
@@ -79,6 +80,7 @@ function open(): DatabaseSync {
   `);
   ensureRecallIndex(db);
   ensureMemoryIndex(db);
+  db.exec("CREATE TABLE IF NOT EXISTS work_outcomes (id TEXT PRIMARY KEY, version INTEGER NOT NULL, producer_thread TEXT NOT NULL, recipient_thread TEXT, json TEXT NOT NULL); CREATE INDEX IF NOT EXISTS work_outcomes_producer ON work_outcomes(producer_thread); CREATE INDEX IF NOT EXISTS work_outcomes_recipient ON work_outcomes(recipient_thread); CREATE TABLE IF NOT EXISTS work_outcome_events (outcome_id TEXT NOT NULL, version INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY(outcome_id, version));");
   return db;
 }
 
@@ -281,6 +283,42 @@ export interface StoredCommandReceipt {
   at: number;
   /** JSON text of the command's result, exactly as first produced. */
   result: string;
+}
+
+/** Operational receipts share the transcript database and its consistent
+ * backup/restore path. Optimistic versions fence concurrent operators. */
+export function readWorkOutcome(id: string): WorkOutcome | null {
+  const row = db().prepare("SELECT json FROM work_outcomes WHERE id = ?").get(id) as { json: string } | undefined;
+  return row ? JSON.parse(row.json) as WorkOutcome : null;
+}
+
+export function workOutcomes(threadId?: string): WorkOutcome[] {
+  const connection = db();
+  const rows = threadId
+    ? connection.prepare("SELECT json FROM work_outcomes WHERE producer_thread = ? OR recipient_thread = ? ORDER BY id").all(threadId, threadId)
+    : connection.prepare("SELECT json FROM work_outcomes ORDER BY id").all();
+  // Corrupt records fail closed; silently dropping one would remove its gate.
+  return (rows as Array<{ json: string }>).map(row => JSON.parse(row.json) as WorkOutcome);
+}
+
+export function saveWorkOutcome(value: WorkOutcome, expectedVersion: number | null): void {
+  const commit = transactionDepth > 0 ? transaction : writeFollowups;
+  commit(connection => {
+    if (expectedVersion === null) {
+      connection.prepare("INSERT INTO work_outcomes(id, version, producer_thread, recipient_thread, json) VALUES (?, ?, ?, ?, ?)")
+        .run(value.id, value.version, value.producer.threadId, value.recipient?.threadId ?? null, JSON.stringify(value));
+    } else {
+      const result = connection.prepare("UPDATE work_outcomes SET version = ?, producer_thread = ?, recipient_thread = ?, json = ? WHERE id = ? AND version = ?")
+        .run(value.version, value.producer.threadId, value.recipient?.threadId ?? null, JSON.stringify(value), value.id, expectedVersion);
+      if (result.changes !== 1) throw Object.assign(new Error("Outcome changed; read it before retrying"), { status: 409, code: "outcome_version_changed" });
+    }
+    connection.prepare("INSERT INTO work_outcome_events(outcome_id, version, json) VALUES (?, ?, ?)").run(value.id, value.version, JSON.stringify(value));
+  });
+}
+
+export function workOutcomeHistory(outcomeId: string, beforeVersion?: number): WorkOutcome[] {
+  const rows = db().prepare("SELECT json FROM work_outcome_events WHERE outcome_id = ? AND version < ? ORDER BY version DESC LIMIT 50").all(outcomeId, beforeVersion ?? Number.MAX_SAFE_INTEGER) as Array<{ json: string }>;
+  return rows.map(row => JSON.parse(row.json) as WorkOutcome);
 }
 
 export function readCommandReceipt(kind: string, key: string): StoredCommandReceipt | null {

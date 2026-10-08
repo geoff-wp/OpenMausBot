@@ -891,7 +891,7 @@ function handle(msg: any) {
       // harness revived it to fold the result in. Synthesize instead of
       // driving the mode's usual delegate/ask flow, which would loop or
       // re-ask for approval on a turn the user did not initiate.
-      const wokeFromDelegation = promptText.includes("[A delegated task just completed]")
+      const wokeFromDelegation = (promptText.includes("[A delegated task just completed]") || promptText.includes("[A delegated reply arrived]"))
         || promptText.includes("[A delegated task failed]");
       if (wokeFromDelegation) {
         fakeLog("branch: wokeFromDelegation");

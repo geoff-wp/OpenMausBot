@@ -28,6 +28,7 @@ import type { RuntimeEvent } from "./runtime-events.ts";
 import type { Notification } from "./notification.ts";
 import type { Routine, RoutineRun } from "./routines.ts";
 import type { WebhookAttempt, WebhookTrigger } from "./webhooks.ts";
+import type { OutcomeSummary } from "./outcomes.ts";
 
 /** Reasoning-effort levels, ascending. A union of everything any engine
  * accepts; each driver declares the subset its CLI will take. Lives here
@@ -395,6 +396,8 @@ export type CardAnswerer = (
 /** One transcript line. Serialized as stored — the durable delivery
  * identity (roomRequest) rides the wire unchanged. */
 export interface WireMessage {
+  /** Only the harness attaches an operational-state projection. */
+  outcome?: OutcomeSummary;
   roomRequest?: { id: string; phase: "request" | "result" };
   id: string;
   role: "bot" | "user";

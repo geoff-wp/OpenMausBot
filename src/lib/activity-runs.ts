@@ -22,10 +22,11 @@ export type TranscriptItem =
 /** A status row rather than a tool step: `recovery:` when automatic recovery
  * changes this conversation's engine, `notice:` when the engine runs another
  * model than the saved one. Both must remain visible and are never folded. */
-export function statusActivity(message: Message): { kind: "recovery" | "notice"; text: string } | null {
+export function statusActivity(message: Message): { kind: "recovery" | "notice" | "outcome"; text: string } | null {
   const name = message.kind === "activity" ? message.tool?.name : undefined;
   if (name?.startsWith("recovery:")) return { kind: "recovery", text: name.slice("recovery:".length).trim() };
   if (name?.startsWith("notice:")) return { kind: "notice", text: name.slice("notice:".length).trim() };
+  if (message.outcome && name?.startsWith("outcome:")) return { kind: "outcome", text: name.slice("outcome:".length).trim() };
   return null;
 }
 

@@ -1005,9 +1005,9 @@ export function _resetPending(): void {
  * to stop idling and answer the user with the outcome. */
 export function buildDelegationRevivalPrompt(targetName: string): string {
   return [
-    "[A delegated task just completed]",
-    `The task you delegated to @${targetName} has finished, and their reply is now in this conversation.`,
-    "Pick the work back up: review the reply, then answer the user with the outcome — lead with the concrete result and say what happens next. Do not re-delegate the same task.",
+    "[A delegated reply arrived]",
+    `@${targetName}'s turn ended, and their reply is now in this conversation. A reply or successful provider turn does not independently verify the requested outcome.`,
+    "Pick the work back up: review the reported facts and verify the required postconditions before claiming success. State any missing proof, current owner and next action. Continue already-authorized work in its existing stream; do not re-delegate the same task unchanged.",
   ].join("\n\n");
 }
 
