@@ -210,6 +210,20 @@ describe("host-owned operational outcomes", () => {
     expect(service.listForRoutine(producer.threadId, "waiting-run")).toEqual([]);
   });
 
+  it("keeps inactive run requirements in operator history but excludes them from later ordinary executions and closure gates", () => {
+    routineRunId = "retired-run";
+    const scoped = service.register(definition({ producerRoutineRunId: "retired-run" }));
+    routineRunId = undefined;
+    expect(service.listForExecution(producer.threadId)).toEqual([]);
+    expect(service.listForActor(producer)).toEqual([]);
+    expect(service.closeRefusal(producer.threadId)).toBeNull();
+    expect(() => service.get(scoped.id, producer)).toThrow(/earlier routine run/);
+    expect(service.get(scoped.id).producerRoutineRunId).toBe("retired-run");
+    const ordinary = service.register(definition({ id: "ordinary-current" }));
+    expect(service.listForExecution(producer.threadId).map(value => value.id)).toEqual([ordinary.id]);
+    expect(service.closeRefusal(producer.threadId)).not.toBeNull();
+  });
+
   it("does not poll terminal checks or create new receipt versions for unchanged current proof", async () => {
     service.register(definition({ checks: [{ id: "file", kind: "artifact", path: "required.txt", sha256: "a".repeat(64), description: "Actual artifact", maxAgeMs: 5_000 }] }));
     publish(); await service.verify("operational-work");

@@ -226,7 +226,7 @@ export class OutcomeService {
   private matchesRoutine(value: WorkOutcome, actor: OutcomeParty): boolean {
     const runId = this.deps.activeRoutineRunId?.(actor);
     const assigned = equalParty(value.producer, actor) ? value.producerRoutineRunId : value.recipientRoutineRunId;
-    return !runId || !assigned || assigned === runId;
+    return !assigned || assigned === runId;
   }
   private validateRoutineClaims(value: Pick<OutcomeDefinition, "producer" | "recipient" | "producerRoutineRunId" | "recipientRoutineRunId">) {
     if (value.producerRoutineRunId && this.deps.activeRoutineRunId?.(value.producer) !== value.producerRoutineRunId || value.recipientRoutineRunId && (!value.recipient || this.deps.activeRoutineRunId?.(value.recipient) !== value.recipientRoutineRunId)) throw new OutcomeError("The explicitly owning routine run is not active on its registered task", 400, "invalid_outcome_routine");
@@ -442,7 +442,7 @@ export class OutcomeService {
     await this.drain();
   }
   closeRefusal(threadId: string): string | null {
-    const pending = this.list(threadId).filter(value => value.state !== "verified_success" && value.state !== "cancelled");
+    const pending = this.listForExecution(threadId).filter(value => value.state !== "verified_success" && value.state !== "cancelled");
     return pending.length ? "Operational work is not verified complete: " + pending.map(value => value.label + " (" + value.state + ")").join(", ") + ". Report the pending checks or blocker; ending a turn does not require closing the task." : null;
   }
 }
