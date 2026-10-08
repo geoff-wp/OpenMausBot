@@ -16,6 +16,7 @@ describe("host-owned operational outcomes", () => {
   let requestOwnsResult: boolean;
   let probe: "pass" | "fail" | "pending" | "unavailable" | null;
   let service: OutcomeService;
+  let routineRunId: string | undefined;
   const definition = (changes: Partial<OutcomeDefinition> = {}): OutcomeDefinition => {
     const value = { id: "operational-work", kind: "task" as const, label: "Required workflow", producer,
       target: { revision: "candidate-1", environment: "registered-environment", configuration: "config-1" },
@@ -33,10 +34,11 @@ describe("host-owned operational outcomes", () => {
     return service.recordVerification(value.id, { attemptId: value.attemptId, target: value.target, checkId: "required-check", receiptId, checkedAt: clock, status, evidence: "Actual independently observed postcondition" }, "trusted-checker");
   };
   beforeEach(() => {
-    clock = 10_000; binding = "registered-resource"; records = new Map(); delivery = new Map(); effects = 0;
+    clock = 10_000; binding = "registered-resource"; records = new Map(); delivery = new Map(); effects = 0; routineRunId = undefined;
     lostResponse = false; consumeBeforeLostResponse = false; busy = false; requestOwnsResult = true; probe = "pass";
     service = new OutcomeService({
       now: () => clock, exists: () => true, binding: () => binding,
+      routineRunId: () => routineRunId,
       persistence: {
         get: id => records.has(id) ? structuredClone(records.get(id)!) : null,
         list: threadId => [...records.values()].filter(value => !threadId || value.producer.threadId === threadId || value.recipient?.threadId === threadId).map(value => structuredClone(value)),
@@ -165,6 +167,23 @@ describe("host-owned operational outcomes", () => {
     expect(outcomeInstructions([{ ...value, state: "cancelled" }], producer.threadId)).toBe("");
     const handoff = { ...value, recipient };
     expect(outcomeInstructions([handoff], recipient.threadId)).toContain('"role":"recipient"');
+  });
+
+  it("binds required proof to its actual routine run and does not inherit prior checks on a reused conversation", () => {
+    routineRunId = "first-run";
+    const prior = service.register(definition()); publish(); verify("fail");
+    expect(service.listForRoutine(producer.threadId, "first-run")).toHaveLength(1);
+    routineRunId = "second-run";
+    expect(service.listForRoutine(producer.threadId, "second-run")).toEqual([]);
+    expect(() => service.register(definition())).toThrow(/earlier routine run/);
+    expect(service.listForActor(producer)).toEqual([]);
+    expect(() => service.get(prior.id, producer)).toThrow(/earlier routine run/);
+    const next = service.register(definition({ id: "second-outcome" }));
+    expect(service.listForRoutine(producer.threadId, "second-run").map(value => value.id)).toEqual([next.id]);
+    expect(service.listForRoutine(producer.threadId, "first-run")[0].state).toBe("verified_failure");
+    service.advance(prior.id, service.get(prior.id).version, { ...prior.target, revision: "next-revision" });
+    expect(service.listForRoutine(producer.threadId, "first-run")).toEqual([]);
+    expect(service.listForRoutine(producer.threadId, "second-run")).toHaveLength(2);
   });
 
   it("does not poll terminal checks or create new receipt versions for unchanged current proof", async () => {

@@ -25,7 +25,7 @@ export function createOutcomeRoutes(deps: OutcomeRouteDeps): RouteHandler {
     if (external && !auth.scopes.includes("admin")) return json(res, 403, { error: "Outcome definitions and verification receipts require administrator scope" });
     try {
       if (internal) {
-        if (method === "GET" && !internal[1]) return json(res, 200, { outcomes: deps.service.list(actor!.threadId).filter(value => value.producer.botId === actor!.botId || value.recipient?.botId === actor!.botId) });
+        if (method === "GET" && !internal[1]) return json(res, 200, { outcomes: deps.service.listForActor(actor!) });
         const outcomeId = internal[1]!;
         if (method === "GET" && !internal[2]) return json(res, 200, { outcome: deps.service.get(outcomeId, actor!) });
         if (method !== "POST") return json(res, 405, { error: "method_not_allowed" });

@@ -48,6 +48,7 @@ export interface OutcomeServiceDeps {
   persistence: OutcomePersistence;
   exists(party: OutcomeParty): boolean;
   binding(party: OutcomeParty): string;
+  routineRunId?(party: OutcomeParty): string | undefined;
   /** Bound to the exact guarded result request, never the latest chat text. */
   request(outcome: WorkOutcome): { messageId: string; generation: string | null; turnId: string | null; phase: string } | null;
   deliver(outcome: WorkOutcome, text: string): Promise<{ messageId: string }>;
@@ -193,6 +194,7 @@ export class OutcomeService {
     if (!this.deps.exists(definition.producer) || (definition.recipient && !this.deps.exists(definition.recipient))) throw new OutcomeError("Every participant must name an existing, unarchived bot task", 400, "invalid_outcome_participant");
     const existing = this.deps.persistence.get(definition.id);
     if (existing) {
+      if (!this.matchesRoutine(existing, existing.producer) || existing.recipient && !this.matchesRoutine(existing, existing.recipient)) throw new OutcomeError("This id belongs to an earlier routine run; explicitly advance its attempt before reusing it", 409, "stale_outcome_run");
       const prior: OutcomeDefinition = { id: existing.id, kind: existing.kind, label: existing.label, producer: existing.producer, recipient: existing.recipient, target: existing.target, checks: existing.checks, firstWork: existing.firstWork, progressWarningMs: existing.progressWarningMs };
       if (JSON.stringify(prior) !== JSON.stringify(definition)) throw new OutcomeError("This id already belongs to another outcome definition");
       return existing;
@@ -200,6 +202,8 @@ export class OutcomeService {
     const now = this.now();
     const value: WorkOutcome = { ...definition, version: 1, attemptId: randomUUID(), targetKey: outcomeTargetKey(definition.target), resourceBinding: this.deps.binding(definition.producer), owner: definition.producer, createdAt: now, updatedAt: now, progressAt: now, state: "incomplete", verification: [], failures: [], history: [] };
     this.evaluate(value);
+    value.producerRoutineRunId = this.deps.routineRunId?.(value.producer);
+    value.recipientRoutineRunId = value.recipient ? this.deps.routineRunId?.(value.recipient) : undefined;
     this.deps.persistence.save(value, null);
     this.deps.changed?.(structuredClone(value));
     return value;
@@ -207,16 +211,31 @@ export class OutcomeService {
   get(outcomeId: string, actor?: OutcomeParty) {
     const value = this.require(outcomeId);
     if (actor && !equalParty(value.producer, actor) && !(value.recipient && equalParty(value.recipient, actor))) throw new OutcomeError("This outcome belongs to other bot tasks", 403, "foreign_outcome");
+    if (actor && !this.matchesRoutine(value, actor)) throw new OutcomeError("This outcome belongs to an earlier routine run; register the current run's requirements", 409, "stale_outcome_run");
     this.evaluate(value);
     return value;
   }
   list(threadId?: string) { return this.deps.persistence.list(threadId).map(value => { this.evaluate(value); return value; }); }
-  hasForThread(threadId: string) { return this.deps.persistence.list(threadId).length > 0; }
+  listForRoutine(threadId: string, runId: string) {
+    return this.list(threadId).filter(value => value.producer.threadId === threadId && value.producerRoutineRunId === runId || value.recipient?.threadId === threadId && value.recipientRoutineRunId === runId);
+  }
+  private matchesRoutine(value: WorkOutcome, actor: OutcomeParty): boolean {
+    const runId = this.deps.routineRunId?.(actor);
+    return !runId || equalParty(value.producer, actor) && value.producerRoutineRunId === runId || Boolean(value.recipient && equalParty(value.recipient, actor) && value.recipientRoutineRunId === runId);
+  }
+  listForActor(actor: OutcomeParty) {
+    return this.list(actor.threadId).filter(value => (equalParty(value.producer, actor) || Boolean(value.recipient && equalParty(value.recipient, actor))) && this.matchesRoutine(value, actor));
+  }
+  listForExecution(threadId: string) {
+    return this.list(threadId).filter(value => this.matchesRoutine(value, value.producer.threadId === threadId ? value.producer : value.recipient!));
+  }
+  hasForThread(threadId: string) { return this.listForExecution(threadId).length > 0; }
   publish(outcomeId: string, raw: unknown, actor: OutcomeActor) {
     const input = publishOutcomeSchema.parse(raw);
     const value = this.require(outcomeId);
     this.live(value, input.attemptId, input.target);
     if (!equalParty(value.producer, actor)) throw new OutcomeError("Only the registered producing task can publish this result", 403, "foreign_outcome_producer");
+    this.get(outcomeId, actor);
     const evidence = normalizeOutcomeEvidence(input.evidence);
     const digest = hash(JSON.stringify([input.target, input.verdict, input.summary, evidence]));
     if (value.result?.id === input.resultId) {
@@ -232,6 +251,7 @@ export class OutcomeService {
     const value = this.require(outcomeId);
     this.live(value, attemptId);
     if (!value.recipient || !equalParty(value.recipient, actor)) throw new OutcomeError("Only the registered receiving task can consume this result", 403, "foreign_outcome_recipient");
+    this.get(outcomeId, actor);
     if (value.result?.id !== resultId) throw new OutcomeError("Consume the exact current result id", 409, "stale_outcome_result");
     const request = this.deps.request(value);
     if (!request || request.generation !== actor.generation || request.phase !== "working") throw new OutcomeError("This result does not own the current receiving execution", 409, "untracked_outcome_consumption");
@@ -299,6 +319,8 @@ export class OutcomeService {
     const value = this.require(outcomeId);
     if (value.version !== expectedVersion) throw new OutcomeError("Outcome changed; read it before advancing the attempt");
     const parsed = target.parse(nextTarget);
+    value.producerRoutineRunId = this.deps.routineRunId?.(value.producer);
+    value.recipientRoutineRunId = value.recipient ? this.deps.routineRunId?.(value.recipient) : undefined;
     value.history = [...value.history, { attemptId: value.attemptId, target: value.target, state: value.state, result: value.result, at: this.now() }].slice(-100);
     value.attemptId = randomUUID(); value.target = parsed; value.targetKey = outcomeTargetKey(parsed); value.resourceBinding = this.deps.binding(value.producer); value.state = "incomplete"; value.owner = value.producer;
     value.result = undefined; value.delivery = undefined; value.consumption = undefined; value.firstWorkObserved = undefined; value.humanRequest = undefined; value.deniedRequest = undefined; value.verification = []; value.failures = []; value.createdAt = this.now(); value.progressAt = value.createdAt;
@@ -342,6 +364,7 @@ export class OutcomeService {
     if (!tool || !event.ok || /(?:publish_result|consume_result|get_outcome|verify_outcome)/.test(tool.name)) return;
     for (const value of this.deps.persistence.list(event.threadId)) {
       if (value.state === "cancelled" || value.deniedRequest || value.firstWorkObserved || !value.recipient || !value.firstWork || (value.consumption && value.consumption.generation !== generation)) continue;
+      if (!this.matchesRoutine(value, value.recipient)) continue;
       if (value.firstWork.tool !== "*" && tool.name !== value.firstWork.tool && !tool.name.endsWith("__" + value.firstWork.tool)) continue;
       if (value.firstWork.inputIncludes && !tool.input.includes(value.firstWork.inputIncludes)) continue;
       const request = this.deps.request(value);

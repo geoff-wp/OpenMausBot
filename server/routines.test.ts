@@ -180,6 +180,23 @@ describe("registered operational proof for scheduled runs", () => {
     expect(h.manager.listRuns()[0]).toMatchObject({ status: "cancelled", outcomeVerification: "cancelled" });
     expect(h.failed).toEqual([]); expect(h.started).toHaveLength(1);
   });
+
+  it("does not settle a new active provider or approval as an earlier proof wait", async () => {
+    const h = harness();
+    let state: "pending" | "verified_success" = "pending";
+    h.options.outcomeStatus = (_threadId, runId) => {
+      expect(runId).toBe(h.manager.listRuns()[0].id);
+      return { state, reason: "Current run's required proof" };
+    };
+    await startRun(h); h.manager.handleRuntimeEvent(completion);
+    h.manager.handleRuntimeEvent({ ...completion, eventId: "new-turn", type: "turn.started" });
+    h.manager.handleRuntimeEvent({ eventId: "approval", provider: "fake", threadId: "thread-1", createdAt: completion.createdAt, type: "request.opened", requestId: "approval-1", requestType: "permission", tool: "Bash", summary: "Actual approval remains open" });
+    state = "verified_success"; h.manager.reconcileOutcome("thread-1"); await h.manager.tick();
+    expect(h.manager.listRuns()[0]).toMatchObject({ status: "waiting", providerSettled: false, attention: "Actual approval remains open" });
+    expect(h.manager.listRuns()[0].finishedAt).toBeUndefined();
+    h.manager.handleRuntimeEvent(completion);
+    expect(h.manager.listRuns()[0].status).toBe("completed");
+  });
 });
 
 describe("bounded scheduled overlap and run health", () => {

@@ -143,6 +143,8 @@ function loadInstalledPackage(value: unknown): RoutinePackageStamp | undefined {
 export interface RoutineRun {
   id: string;
   outcomeVerification?: "pending" | "verified_success" | "verified_failure" | "cancelled";
+  /** Only a settled provider may leave a durable wait for operational proof. */
+  providerSettled?: boolean;
   routineId: string;
   routineName: string;
   /** Snapshot the work so an edited/deleted definition cannot rewrite history. */
@@ -325,7 +327,7 @@ export interface RoutineManagerOptions {
   /** A successful provider turn is intermediate while its peer work or
    * queued continuation still belongs to this detached execution. */
   hasPendingDelegations?: (threadId: string) => boolean;
-  outcomeStatus?: (threadId: string) => { state: "pending" | "verified_success" | "verified_failure" | "cancelled"; reason: string } | null;
+  outcomeStatus?: (threadId: string, runId: string) => { state: "pending" | "verified_success" | "verified_failure" | "cancelled"; reason: string } | null;
 }
 
 const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
@@ -833,6 +835,7 @@ export class RoutineManager {
               target,
               goalStatus: loadGoalStatus(run.goalStatus, target),
               outcomeVerification: ["pending", "verified_success", "verified_failure", "cancelled"].includes(run.outcomeVerification ?? "") ? run.outcomeVerification : undefined,
+              providerSettled: run.providerSettled === true,
               groupId: loadGroupId(run.groupId, target),
               runOn: run.runOn ?? "maus",
               timeoutMinutes: loadTimeoutMinutes(run.timeoutMinutes),
@@ -881,7 +884,7 @@ export class RoutineManager {
     // A local process cannot still own these turns after a full restart.
     const recovered: RoutineRun[] = [];
     for (const run of this.runs) {
-      if (run.status === "waiting" && ["pending", "verified_success"].includes(run.outcomeVerification ?? "")) continue;
+      if (run.status === "waiting" && run.providerSettled && ["pending", "verified_success"].includes(run.outcomeVerification ?? "")) continue;
       if (run.status === "running" || run.status === "waiting") {
         run.status = "failed";
         if (run.target === "room-goal") run.goalStatus = "failed";
@@ -960,6 +963,11 @@ export class RoutineManager {
     const run = this.runs.find(
       (candidate) => candidate.botId === botId && ["running", "waiting"].includes(candidate.status),
     );
+    return run ? cloneRun(run) : null;
+  }
+
+  activeRunForThread(threadId: string): RoutineRun | null {
+    const run = this.runs.find(value => value.threadId === threadId && ["running", "waiting"].includes(value.status));
     return run ? cloneRun(run) : null;
   }
 
@@ -1673,12 +1681,15 @@ export class RoutineManager {
       )
     ) return null;
     if (event.type === "turn.started") {
+      run.providerSettled = false;
       run.status = "running";
       run.attention = undefined;
     } else if (event.type === "request.opened") {
+      run.providerSettled = false;
       run.status = "waiting";
       run.attention = redactSecretsInText(event.summary).trim().slice(0, 500) || undefined;
     } else if (event.type === "request.resolved") {
+      run.providerSettled = false;
       run.status = "running";
       run.attention = undefined;
     } else if (event.type === "item.completed" && event.itemType === "assistant_text") {
@@ -1705,7 +1716,8 @@ export class RoutineManager {
         return cloneRun(run);
       }
       const pending = this.options.hasPendingDelegations?.(event.threadId) === true;
-      const outcome = this.options.outcomeStatus?.(event.threadId);
+      run.providerSettled = true;
+      const outcome = this.options.outcomeStatus?.(event.threadId, run.id);
       const outcomeReason = outcome ? redactSecretsInText(outcome.reason).trim().slice(0, 500) : undefined;
       run.outcomeVerification = outcome?.state;
       if (outcome?.state === "verified_failure") {
@@ -1729,9 +1741,9 @@ export class RoutineManager {
   /** A settled provider does not need another model turn to finish its
    * registered proof lifecycle. This never creates a new routine/chat. */
   reconcileOutcome(threadId: string): void {
-    const run = this.runs.find(value => value.threadId === threadId && value.status === "waiting" && ["pending", "verified_success"].includes(value.outcomeVerification ?? ""));
+    const run = this.runs.find(value => value.threadId === threadId && value.status === "waiting" && value.providerSettled && ["pending", "verified_success"].includes(value.outcomeVerification ?? ""));
     if (!run) return;
-    const outcome = this.options.outcomeStatus?.(threadId);
+    const outcome = this.options.outcomeStatus?.(threadId, run.id);
     if (!outcome || outcome.state === "pending") return;
     if (outcome.state === "verified_failure") {
       run.outcomeVerification = outcome.state;

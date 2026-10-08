@@ -70,9 +70,13 @@ export async function probeOutcome(
         execFile("git", ["-C", root, "status", "--porcelain=v1", "--untracked-files=normal", "--ignore-submodules=none"], { timeout: 10_000, maxBuffer: 64 * 1024, windowsHide: true }, (statusError, status) => {
           if (statusError) return resolveAnswer({ status: "unavailable", evidence: "The registered checkout's working files could not be checked" });
           if (status.trim()) return resolveAnswer({ status: "fail", evidence: "HEAD matches the registered revision, but the checkout has staged, modified or untracked files; those bytes are not the registered candidate" });
-          execFile("git", ["-C", root, "rev-parse", "HEAD"], { timeout: 10_000, maxBuffer: 4_096, windowsHide: true }, (afterError, after) => {
-            if (afterError || after.trim() !== actual) return resolveAnswer({ status: "unavailable", evidence: "The registered checkout changed while its revision was being checked" });
-            resolveAnswer({ status: "pass", evidence: "Registered workspace HEAD matches " + actual + " and its checkout is clean" });
+          execFile("git", ["-C", root, "ls-files", "-v", "-z"], { timeout: 10_000, maxBuffer: 2 * 1024 * 1024, windowsHide: true }, (indexError, entries) => {
+            if (indexError) return resolveAnswer({ status: "unavailable", evidence: "The registered checkout's index visibility could not be checked" });
+            if (entries.split("\0").some(entry => /^[a-zS]/.test(entry))) return resolveAnswer({ status: "fail", evidence: "Tracked files use assume-unchanged or skip-worktree; Git status cannot verify their candidate bytes" });
+            execFile("git", ["-C", root, "rev-parse", "HEAD"], { timeout: 10_000, maxBuffer: 4_096, windowsHide: true }, (afterError, after) => {
+              if (afterError || after.trim() !== actual) return resolveAnswer({ status: "unavailable", evidence: "The registered checkout changed while its revision was being checked" });
+              resolveAnswer({ status: "pass", evidence: "Registered workspace HEAD matches " + actual + " and its checkout is clean without hidden index entries" });
+            });
           });
         });
       });

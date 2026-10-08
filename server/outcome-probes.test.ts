@@ -38,6 +38,14 @@ describe("independent postcondition probes", () => {
     expect((await probeOutcome(registered, check, { cwd: root, host: true })).status).toBe("fail");
     unlinkSync(join(root, "extra.txt"));
     expect((await probeOutcome(registered, check, { cwd: root, host: true })).status).toBe("pass");
+    for (const flag of ["assume-unchanged", "skip-worktree"]) {
+      git("update-index", "--" + flag, "candidate.txt");
+      writeFileSync(join(root, "candidate.txt"), "hidden unverified changes");
+      expect(git("status", "--porcelain").trim()).toBe("");
+      expect((await probeOutcome(registered, check, { cwd: root, host: true })).status).toBe("fail");
+      git("update-index", "--no-" + flag, "candidate.txt");
+      git("restore", "--worktree", "candidate.txt");
+    }
   });
   it("checks the actual bytes in the registered task folder, not a model claim or another folder", async () => {
     const root = folder(); const other = folder(); const content = "required artifact";

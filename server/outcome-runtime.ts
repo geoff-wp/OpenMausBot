@@ -10,6 +10,7 @@ import type { RequestAuth } from "./request-auth.ts";
 
 export interface OutcomeRuntimeDeps {
   exists(party: OutcomeParty): boolean;
+  routineRunId?(party: OutcomeParty): string | undefined;
   workspace(party: OutcomeParty): { cwd: string; host: boolean; resource: string } | null;
   actor(header: IncomingMessage["headers"]["authorization"]): OutcomeActor | null;
   request(outcome: WorkOutcome): { messageId: string; generation: string | null; turnId: string | null; phase: string } | null;
@@ -25,6 +26,7 @@ export function createOutcomeRuntime(deps: OutcomeRuntimeDeps) {
   const service = new OutcomeService({
     persistence: { get: readWorkOutcome, list: workOutcomes, save: saveWorkOutcome },
     exists: deps.exists,
+    routineRunId: deps.routineRunId,
     binding: party => createHash("sha256").update(JSON.stringify(deps.workspace(party))).digest("hex"),
     request: deps.request,
     deliver: deps.deliver,
@@ -52,5 +54,5 @@ export function createOutcomeRuntime(deps: OutcomeRuntimeDeps) {
   };
   const timer = setInterval(() => { void tick(); }, 5_000);
   timer.unref();
-  return { service, routes, tick, instructions: (threadId: string) => outcomeInstructions(service.list(threadId), threadId), stop: () => clearInterval(timer) };
+  return { service, routes, tick, instructions: (threadId: string) => outcomeInstructions(service.listForExecution(threadId), threadId), stop: () => clearInterval(timer) };
 }

@@ -11286,8 +11286,8 @@ const commsBus: CommsBus = {
 _loadPending();
 
 routines = new RoutineManager({
-  outcomeStatus: threadId => {
-    const all = outcomeRuntime.service.list(threadId);
+  outcomeStatus: (threadId, runId) => {
+    const all = outcomeRuntime.service.listForRoutine(threadId, runId);
     if (!all.length) return null;
     const records = all.filter(value => value.state !== "cancelled");
     if (!records.length) return { state: "cancelled" as const, reason: "All registered operational outcomes were explicitly cancelled" };
@@ -15936,6 +15936,7 @@ function outcomeWorkspace(party: OutcomeParty) {
   return { cwd, host: supportsWorkspaceFiles(registry.get((store.projectBotForTask(party.botId, party.threadId) ?? bot).modelSelection.instanceId)?.driverKind ?? "unknown"), resource: JSON.stringify([bot.computer, bot.cloudBackend, cwd]) };
 }
 const outcomeRuntime = createOutcomeRuntime({
+  routineRunId: party => routines?.activeRunForThread(party.threadId)?.id,
   exists: party => Boolean(store.bot(party.botId) && !store.bot(party.botId)?.hidden && store.taskByThread(party.botId, party.threadId) && !store.taskByThread(party.botId, party.threadId)?.archivedAt),
   workspace: outcomeWorkspace,
   actor: header => {

@@ -27,6 +27,7 @@ Registered checks are deliberately narrow:
 - `git_head`: the actual registered host workspace HEAD must match the target
   revision and have no staged, modified or untracked files. Matching the commit
   alone does not verify changed working files as the registered candidate.
+  Index entries that hide files through assume-unchanged or skip-worktree fail.
 - `github_pr`: the live PR head and every configured required check must
   match/succeed. Missing or running checks are pending, never success.
 - `http_json`: read the exact configured URL and parameters, without redirects,
@@ -84,6 +85,9 @@ settles the run as cancelled, never completed. Waiting carries
 the owner, reason, next action, resume trigger and last meaningful progress;
 tokens and repeated unchanged checks do not reset that clock. Warnings never
 impose a QA duration cutoff or automatically retry a person's denial.
+Routine associations are resolved by the host at registration or advance and
+apply only to that actual run, including when later runs reuse its chat. A new
+provider turn or open request cannot be mistaken for a settled proof wait.
 
 The host appends trusted outcome-status projections to the transcript. These
 remain visible with Tool calls disabled. An outcome-like string from an ordinary
