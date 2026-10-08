@@ -38,7 +38,7 @@ describe("host-owned operational outcomes", () => {
     lostResponse = false; consumeBeforeLostResponse = false; busy = false; requestOwnsResult = true; probe = "pass";
     service = new OutcomeService({
       now: () => clock, exists: () => true, binding: () => binding,
-      routineRunId: () => routineRunId,
+      activeRoutineRunId: () => routineRunId,
       persistence: {
         get: id => records.has(id) ? structuredClone(records.get(id)!) : null,
         list: threadId => [...records.values()].filter(value => !threadId || value.producer.threadId === threadId || value.recipient?.threadId === threadId).map(value => structuredClone(value)),
@@ -171,17 +171,17 @@ describe("host-owned operational outcomes", () => {
 
   it("binds required proof to its actual routine run and does not inherit prior checks on a reused conversation", () => {
     routineRunId = "first-run";
-    const prior = service.register(definition()); publish(); verify("fail");
+    const prior = service.register(definition({ producerRoutineRunId: "first-run" })); publish(); verify("fail");
     expect(service.listForRoutine(producer.threadId, "first-run")).toHaveLength(1);
     routineRunId = "second-run";
     expect(service.listForRoutine(producer.threadId, "second-run")).toEqual([]);
     expect(() => service.register(definition())).toThrow(/earlier routine run/);
     expect(service.listForActor(producer)).toEqual([]);
     expect(() => service.get(prior.id, producer)).toThrow(/earlier routine run/);
-    const next = service.register(definition({ id: "second-outcome" }));
+    const next = service.register(definition({ id: "second-outcome", producerRoutineRunId: "second-run" }));
     expect(service.listForRoutine(producer.threadId, "second-run").map(value => value.id)).toEqual([next.id]);
     expect(service.listForRoutine(producer.threadId, "first-run")[0].state).toBe("verified_failure");
-    service.advance(prior.id, service.get(prior.id).version, { ...prior.target, revision: "next-revision" });
+    service.advance(prior.id, service.get(prior.id).version, { ...prior.target, revision: "next-revision" }, { producerRoutineRunId: "second-run" });
     expect(service.listForRoutine(producer.threadId, "first-run")).toEqual([]);
     expect(service.listForRoutine(producer.threadId, "second-run")).toHaveLength(2);
   });
@@ -194,6 +194,20 @@ describe("host-owned operational outcomes", () => {
     const prompt = outcomeInstructions(records, producer.threadId);
     expect(prompt).toContain("20 of 21 requirements");
     expect(prompt).toContain("get_outcome with no outcome_id");
+  });
+
+  it("does not silently assign ordinary work to a waiting routine and validates explicit ownership", () => {
+    routineRunId = "waiting-run";
+    const ordinary = service.register(definition());
+    expect(ordinary.producerRoutineRunId).toBeUndefined();
+    expect(service.listForRoutine(producer.threadId, "waiting-run")).toEqual([]);
+    expect(service.listForActor(producer)).toHaveLength(1);
+    expect(() => service.register(definition({ id: "bad-run", producerRoutineRunId: "different-run" }))).toThrow(/not active/);
+    const scoped = service.register(definition({ id: "scoped", producerRoutineRunId: "waiting-run" }));
+    expect(service.listForRoutine(producer.threadId, "waiting-run").map(value => value.id)).toEqual([scoped.id]);
+    const cleared = service.advance(scoped.id, scoped.version, scoped.target, { producerRoutineRunId: null });
+    expect(cleared.producerRoutineRunId).toBeUndefined();
+    expect(service.listForRoutine(producer.threadId, "waiting-run")).toEqual([]);
   });
 
   it("does not poll terminal checks or create new receipt versions for unchanged current proof", async () => {

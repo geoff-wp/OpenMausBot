@@ -1457,9 +1457,6 @@ export class RoutineManager {
     this.ticking = true;
     try {
       const now = this.now();
-      // A durable proof wait survives the provider process. Reconcile on
-      // restart and after delegated work settles even without a new receipt.
-      for (const run of this.runs) if (run.status === "waiting" && ["pending", "verified_success"].includes(run.outcomeVerification ?? "") && run.threadId) this.reconcileOutcome(run.threadId);
       for (const run of this.runs) {
         if (
           !["running", "waiting"].includes(run.status) ||
@@ -1481,6 +1478,8 @@ export class RoutineManager {
           await this.options.interruptTurn?.(run.botId, threadId).catch(() => {});
         }
       }
+      // Preserve configured run limits before settling a durable proof wait.
+      for (const run of this.runs) if (run.status === "waiting" && ["pending", "verified_success"].includes(run.outcomeVerification ?? "") && run.threadId) this.reconcileOutcome(run.threadId);
       const dueRoutines = this.routines.filter(
         (routine) => routine.enabled && routine.nextRunAt != null && routine.nextRunAt <= now,
       );
@@ -1716,6 +1715,10 @@ export class RoutineManager {
         return cloneRun(run);
       }
       const pending = this.options.hasPendingDelegations?.(event.threadId) === true;
+      if (run.timeoutMinutes != null && run.startedAt != null && this.now() - run.startedAt >= run.timeoutMinutes * 60_000) {
+        this.failRun(run, `Stopped after reaching the ${run.timeoutMinutes}-minute run limit`);
+        queueMicrotask(() => void this.tick()); return cloneRun(run);
+      }
       run.providerSettled = true;
       const outcome = this.options.outcomeStatus?.(event.threadId, run.id);
       const outcomeReason = outcome ? redactSecretsInText(outcome.reason).trim().slice(0, 500) : undefined;
@@ -1745,6 +1748,10 @@ export class RoutineManager {
     if (!run) return;
     const outcome = this.options.outcomeStatus?.(threadId, run.id);
     if (!outcome || outcome.state === "pending") return;
+    if (outcome.state === "verified_success" && run.timeoutMinutes != null && run.startedAt != null && this.now() - run.startedAt >= run.timeoutMinutes * 60_000) {
+      // The existing tick path records failure and interrupts the right turn.
+      queueMicrotask(() => void this.tick()); return;
+    }
     if (outcome.state === "verified_failure") {
       run.outcomeVerification = outcome.state;
       this.failRun(run, outcome.reason); queueMicrotask(() => void this.tick()); return;

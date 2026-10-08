@@ -85,8 +85,12 @@ settles the run as cancelled, never completed. Waiting carries
 the owner, reason, next action, resume trigger and last meaningful progress;
 tokens and repeated unchanged checks do not reset that clock. Warnings never
 impose a QA duration cutoff or automatically retry a person's denial.
-Routine associations are resolved by the host at registration or advance and
-apply only to that actual run, including when later runs reuse its chat. A new
+An administrator may explicitly supply `producerRoutineRunId` and/or
+`recipientRoutineRunId` at registration; the host validates each against the
+actual active run on that task. Omitting them means ordinary work, even when a
+routine waits in the same chat. Advance can explicitly change an association,
+or clear it with `null`; omitted associations retain their previous binding.
+Associations apply only to that actual run, including when later runs reuse its chat. A new
 provider turn or open request cannot be mistaken for a settled proof wait.
 
 The host appends trusted outcome-status projections to the transcript. These

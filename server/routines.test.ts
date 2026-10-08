@@ -115,8 +115,8 @@ afterEach(() => {
 
 describe("registered operational proof for scheduled runs", () => {
   const completion = { eventId: "provider-settled", provider: "fake", threadId: "thread-1", createdAt: "2026-10-07T20:00:00.000Z", type: "turn.completed" as const, ok: true };
-  const startRun = async (h: ReturnType<typeof harness>) => {
-    const routine = h.manager.create({ name: "Verified fixture", prompt: "Produce and verify the requested artifact", botId: "maus-1", schedule: { type: "interval", everyMinutes: 5, anchorAt: Date.parse(completion.createdAt) } });
+  const startRun = async (h: ReturnType<typeof harness>, timeoutMinutes?: number) => {
+    const routine = h.manager.create({ name: "Verified fixture", prompt: "Produce and verify the requested artifact", botId: "maus-1", schedule: { type: "interval", everyMinutes: 5, anchorAt: Date.parse(completion.createdAt) }, ...(timeoutMinutes === undefined ? {} : { timeoutMinutes }) });
     h.manager.runNow(routine.id); await h.manager.tick();
     expect(h.started).toHaveLength(1);
   };
@@ -196,6 +196,22 @@ describe("registered operational proof for scheduled runs", () => {
     expect(h.manager.listRuns()[0].finishedAt).toBeUndefined();
     h.manager.handleRuntimeEvent(completion);
     expect(h.manager.listRuns()[0].status).toBe("completed");
+  });
+
+  it.each(["receipt", "provider completion"])("applies an explicitly configured run limit before late %s can settle it", async path => {
+    const h = harness();
+    let state: "pending" | "verified_success" = "pending";
+    h.options.outcomeStatus = () => ({ state, reason: "Registered proof" });
+    await startRun(h, 5); h.manager.handleRuntimeEvent(completion);
+    h.setNow(h.manager.listRuns()[0].startedAt! + 300_001);
+    state = "verified_success";
+    if (path === "receipt") {
+      h.manager.reconcileOutcome("thread-1");
+      expect(h.manager.listRuns()[0].status).toBe("waiting");
+    } else h.manager.handleRuntimeEvent(completion);
+    await h.manager.tick();
+    expect(h.manager.listRuns()[0]).toMatchObject({ status: "failed", error: "Stopped after reaching the 5-minute run limit" });
+    expect(h.failed).toHaveLength(1); expect(h.interruptedTurns).toHaveLength(path === "receipt" ? 1 : 0);
   });
 });
 

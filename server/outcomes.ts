@@ -8,6 +8,7 @@ const target = z.object({ revision: z.string().trim().min(1).max(128), environme
 const baseCheck = { id, description: z.string().min(1).max(500), maxAgeMs: z.number().int().min(1_000).max(86_400_000).default(600_000) };
 export const outcomeDefinitionSchema = z.object({
   id, kind: z.enum(["task", "handoff"]), label: z.string().min(1).max(160), producer: party, recipient: party.optional(), target,
+  producerRoutineRunId: id.optional(), recipientRoutineRunId: id.optional(),
   checks: z.array(z.discriminatedUnion("kind", [
     z.object({ ...baseCheck, kind: z.literal("attestation") }).strict(),
     z.object({ ...baseCheck, kind: z.literal("artifact"), path: z.string().min(1).max(512), sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
@@ -22,6 +23,7 @@ export const outcomeDefinitionSchema = z.object({
   if (value.kind === "task" && !value.checks.length) ctx.addIssue({ code: "custom", path: ["checks"], message: "An operational task needs at least one required check" });
   if (value.recipient && !value.firstWork) ctx.addIssue({ code: "custom", path: ["firstWork"], message: "A handoff needs a declared first-work tool" });
   if (value.kind === "handoff" && !value.recipient) ctx.addIssue({ code: "custom", path: ["recipient"], message: "A handoff needs a recipient" });
+  if (value.recipientRoutineRunId && !value.recipient) ctx.addIssue({ code: "custom", path: ["recipientRoutineRunId"], message: "A recipient run needs a recipient task" });
   if (value.firstWork?.tool === "*" && !value.firstWork.inputIncludes) ctx.addIssue({ code: "custom", path: ["firstWork"], message: "A wildcard first-work tool needs an exact resource/input match" });
   if (value.recipient && value.recipient.botId === value.producer.botId && value.recipient.threadId === value.producer.threadId) ctx.addIssue({ code: "custom", path: ["recipient"], message: "Do not dispatch a result back into its producing turn" });
 });
@@ -32,6 +34,7 @@ export const publishOutcomeSchema = z.object({
 export const verificationRecordSchema = z.object({
   attemptId: id, target, checkId: id, receiptId: id, checkedAt: z.number().int().nonnegative(), status: z.enum(["pass", "fail", "pending", "unavailable"]), evidence: z.string().trim().min(1).max(2_000),
 }).strict();
+export const outcomeRunBindingsSchema = z.object({ producerRoutineRunId: id.nullable().optional(), recipientRoutineRunId: id.nullable().optional() }).strict();
 
 export class OutcomeError extends Error {
   readonly status: number;
@@ -48,7 +51,8 @@ export interface OutcomeServiceDeps {
   persistence: OutcomePersistence;
   exists(party: OutcomeParty): boolean;
   binding(party: OutcomeParty): string;
-  routineRunId?(party: OutcomeParty): string | undefined;
+  /** Validate explicit ownership and filter executions; never assign ownership by inference. */
+  activeRoutineRunId?(party: OutcomeParty): string | undefined;
   /** Bound to the exact guarded result request, never the latest chat text. */
   request(outcome: WorkOutcome): { messageId: string; generation: string | null; turnId: string | null; phase: string } | null;
   deliver(outcome: WorkOutcome, text: string): Promise<{ messageId: string }>;
@@ -192,19 +196,18 @@ export class OutcomeService {
   }
   register(raw: unknown) {
     const definition = outcomeDefinitionSchema.parse(raw);
+    this.validateRoutineClaims(definition);
     if (!this.deps.exists(definition.producer) || (definition.recipient && !this.deps.exists(definition.recipient))) throw new OutcomeError("Every participant must name an existing, unarchived bot task", 400, "invalid_outcome_participant");
     const existing = this.deps.persistence.get(definition.id);
     if (existing) {
       if (!this.matchesRoutine(existing, existing.producer) || existing.recipient && !this.matchesRoutine(existing, existing.recipient)) throw new OutcomeError("This id belongs to an earlier routine run; explicitly advance its attempt before reusing it", 409, "stale_outcome_run");
-      const prior: OutcomeDefinition = { id: existing.id, kind: existing.kind, label: existing.label, producer: existing.producer, recipient: existing.recipient, target: existing.target, checks: existing.checks, firstWork: existing.firstWork, progressWarningMs: existing.progressWarningMs };
+      const prior: OutcomeDefinition = { id: existing.id, kind: existing.kind, label: existing.label, producer: existing.producer, recipient: existing.recipient, producerRoutineRunId: existing.producerRoutineRunId, recipientRoutineRunId: existing.recipientRoutineRunId, target: existing.target, checks: existing.checks, firstWork: existing.firstWork, progressWarningMs: existing.progressWarningMs };
       if (JSON.stringify(prior) !== JSON.stringify(definition)) throw new OutcomeError("This id already belongs to another outcome definition");
       return existing;
     }
     const now = this.now();
     const value: WorkOutcome = { ...definition, version: 1, attemptId: randomUUID(), targetKey: outcomeTargetKey(definition.target), resourceBinding: this.deps.binding(definition.producer), owner: definition.producer, createdAt: now, updatedAt: now, progressAt: now, state: "incomplete", verification: [], failures: [], history: [] };
     this.evaluate(value);
-    value.producerRoutineRunId = this.deps.routineRunId?.(value.producer);
-    value.recipientRoutineRunId = value.recipient ? this.deps.routineRunId?.(value.recipient) : undefined;
     this.deps.persistence.save(value, null);
     this.deps.changed?.(structuredClone(value));
     return value;
@@ -221,8 +224,12 @@ export class OutcomeService {
     return this.list(threadId).filter(value => value.producer.threadId === threadId && value.producerRoutineRunId === runId || value.recipient?.threadId === threadId && value.recipientRoutineRunId === runId);
   }
   private matchesRoutine(value: WorkOutcome, actor: OutcomeParty): boolean {
-    const runId = this.deps.routineRunId?.(actor);
-    return !runId || equalParty(value.producer, actor) && value.producerRoutineRunId === runId || Boolean(value.recipient && equalParty(value.recipient, actor) && value.recipientRoutineRunId === runId);
+    const runId = this.deps.activeRoutineRunId?.(actor);
+    const assigned = equalParty(value.producer, actor) ? value.producerRoutineRunId : value.recipientRoutineRunId;
+    return !runId || !assigned || assigned === runId;
+  }
+  private validateRoutineClaims(value: Pick<OutcomeDefinition, "producer" | "recipient" | "producerRoutineRunId" | "recipientRoutineRunId">) {
+    if (value.producerRoutineRunId && this.deps.activeRoutineRunId?.(value.producer) !== value.producerRoutineRunId || value.recipientRoutineRunId && (!value.recipient || this.deps.activeRoutineRunId?.(value.recipient) !== value.recipientRoutineRunId)) throw new OutcomeError("The explicitly owning routine run is not active on its registered task", 400, "invalid_outcome_routine");
   }
   listForActor(actor: OutcomeParty) {
     return this.list(actor.threadId).filter(value => (equalParty(value.producer, actor) || Boolean(value.recipient && equalParty(value.recipient, actor))) && this.matchesRoutine(value, actor));
@@ -316,12 +323,14 @@ export class OutcomeService {
       if (["cancelled", "verified_success", "verified_failure"].includes(this.deps.persistence.get(outcomeId)?.state ?? "")) this.clearProbeSchedule(outcomeId);
     }
   }
-  advance(outcomeId: string, expectedVersion: number, nextTarget: unknown) {
+  advance(outcomeId: string, expectedVersion: number, nextTarget: unknown, runBindings: unknown = {}) {
     const value = this.require(outcomeId);
     if (value.version !== expectedVersion) throw new OutcomeError("Outcome changed; read it before advancing the attempt");
     const parsed = target.parse(nextTarget);
-    value.producerRoutineRunId = this.deps.routineRunId?.(value.producer);
-    value.recipientRoutineRunId = value.recipient ? this.deps.routineRunId?.(value.recipient) : undefined;
+    const bindings = outcomeRunBindingsSchema.parse(runBindings);
+    if (bindings.producerRoutineRunId !== undefined) value.producerRoutineRunId = bindings.producerRoutineRunId ?? undefined;
+    if (bindings.recipientRoutineRunId !== undefined) value.recipientRoutineRunId = bindings.recipientRoutineRunId ?? undefined;
+    this.validateRoutineClaims(value);
     value.history = [...value.history, { attemptId: value.attemptId, target: value.target, state: value.state, result: value.result, at: this.now() }].slice(-100);
     value.attemptId = randomUUID(); value.target = parsed; value.targetKey = outcomeTargetKey(parsed); value.resourceBinding = this.deps.binding(value.producer); value.state = "incomplete"; value.owner = value.producer;
     value.result = undefined; value.delivery = undefined; value.consumption = undefined; value.firstWorkObserved = undefined; value.humanRequest = undefined; value.deniedRequest = undefined; value.verification = []; value.failures = []; value.createdAt = this.now(); value.progressAt = value.createdAt;
@@ -340,8 +349,8 @@ export class OutcomeService {
     if ((event.type === "request.opened" || event.type === "request.resolved") && event.requestId && generation && event.origin !== "output") {
       for (const value of this.deps.persistence.list(event.threadId)) {
         if (value.state === "cancelled") continue;
-        const relatedProducer = value.producer.threadId === event.threadId;
-        const relatedConsumer = value.recipient?.threadId === event.threadId && this.deps.request(value)?.generation === generation;
+        const relatedProducer = value.producer.threadId === event.threadId && this.matchesRoutine(value, value.producer);
+        const relatedConsumer = value.recipient?.threadId === event.threadId && this.matchesRoutine(value, value.recipient) && this.deps.request(value)?.generation === generation;
         if (!relatedProducer && !relatedConsumer) continue;
         if (event.type === "request.opened") value.humanRequest = { threadId: event.threadId, requestId: event.requestId, at: this.now() };
         else {

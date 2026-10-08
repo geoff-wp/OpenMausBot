@@ -15936,7 +15936,7 @@ function outcomeWorkspace(party: OutcomeParty) {
   return { cwd, host: supportsWorkspaceFiles(registry.get((store.projectBotForTask(party.botId, party.threadId) ?? bot).modelSelection.instanceId)?.driverKind ?? "unknown"), resource: JSON.stringify([bot.computer, bot.cloudBackend, cwd]) };
 }
 const outcomeRuntime = createOutcomeRuntime({
-  routineRunId: party => routines?.activeRunForThread(party.threadId)?.id,
+  activeRoutineRunId: party => routines?.activeRunForThread(party.threadId)?.id,
   exists: party => Boolean(store.bot(party.botId) && !store.bot(party.botId)?.hidden && store.taskByThread(party.botId, party.threadId) && !store.taskByThread(party.botId, party.threadId)?.archivedAt),
   workspace: outcomeWorkspace,
   actor: header => {

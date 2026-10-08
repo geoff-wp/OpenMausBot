@@ -10,6 +10,7 @@ export interface OutcomeRouteDeps {
   history(outcomeId: string, beforeVersion?: number): unknown[];
 }
 const action = z.object({ expectedVersion: z.number().int().min(1), target: z.unknown().optional() }).strict();
+const advance = action.extend({ producerRoutineRunId: z.string().min(1).max(128).nullable().optional(), recipientRoutineRunId: z.string().min(1).max(128).nullable().optional() });
 const consumption = z.object({ attemptId: z.string().min(1).max(128), resultId: z.string().min(1).max(128) }).strict();
 
 export function createOutcomeRoutes(deps: OutcomeRouteDeps): RouteHandler {
@@ -52,11 +53,15 @@ export function createOutcomeRoutes(deps: OutcomeRouteDeps): RouteHandler {
       if (external![2] === "verification") outcome = deps.service.recordVerification(outcomeId, body, deps.verifierIdentity(auth));
       else if (external![2] === "verify") { if (!body || Object.keys(body).length) throw new OutcomeError("verify takes an empty object", 400); outcome = await deps.service.verify(outcomeId); }
       else {
-        const input = action.parse(body);
-        if (external![2] === "advance") outcome = deps.service.advance(outcomeId, input.expectedVersion, input.target);
-        else if (external![2] === "cancel") outcome = deps.service.cancel(outcomeId, input.expectedVersion);
-        else if (external![2] === "retry") outcome = deps.service.retryDelivery(outcomeId, input.expectedVersion);
-        else return json(res, 404, { error: "not_found" });
+        if (external![2] === "advance") {
+          const scoped = advance.parse(body);
+          outcome = deps.service.advance(outcomeId, scoped.expectedVersion, scoped.target, { producerRoutineRunId: scoped.producerRoutineRunId, recipientRoutineRunId: scoped.recipientRoutineRunId });
+        } else {
+          const input = action.parse(body);
+          if (external![2] === "cancel") outcome = deps.service.cancel(outcomeId, input.expectedVersion);
+          else if (external![2] === "retry") outcome = deps.service.retryDelivery(outcomeId, input.expectedVersion);
+          else return json(res, 404, { error: "not_found" });
+        }
       }
       void deps.service.drain().catch(() => {});
       return json(res, 200, { outcome, verified: outcome.state === "verified_success" });

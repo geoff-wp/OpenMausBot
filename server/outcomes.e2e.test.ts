@@ -88,6 +88,7 @@ describe("operational outcomes through the actual isolated server", () => {
     const registered = (await api("POST", "/api/outcomes", { id: "real-task", kind: "task", label: "Create the required artifact", producer,
       target: { revision: "artifact-1", environment: "isolated" }, checks: [{ id: "actual-artifact", kind: "artifact", description: "Expected bytes in the actual task folder", path: "required.txt", sha256: createHash("sha256").update(content).digest("hex"), maxAgeMs: 60_000 }],
     }, undefined, 201)).outcome;
+    await api("POST", "/api/outcomes", { id: "invalid-routine", kind: "task", label: "Wrong routine ownership", producer, producerRoutineRunId: "not-an-active-run", target: registered.target, checks: registered.checks }, undefined, 400);
     await control(["send", "--bot", producer.botId, "--task", producer.threadId, "--text", "Create the artifact required by the registered outcome."]);
     const launched = await dump(producer.threadId);
     const context = toolCallContextFromEnv(launched.mcpConfig.mcpServers.agents.env);

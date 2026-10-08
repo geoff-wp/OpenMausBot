@@ -25,6 +25,10 @@ export interface OutcomeDefinition {
   label: string;
   producer: OutcomeParty;
   recipient?: OutcomeParty;
+  /** Administrator-supplied ownership, validated against the actual active run.
+   * Omitted associations mean ordinary work, even in a shared routine chat. */
+  producerRoutineRunId?: string;
+  recipientRoutineRunId?: string;
   target: OutcomeTarget;
   checks: OutcomeCheck[];
   /** A successful matching tool in the delivered request proves pickup. */
@@ -58,9 +62,6 @@ export interface OutcomeWait {
   overdue: boolean;
 }
 export interface WorkOutcome extends OutcomeDefinition {
-  /** Host-resolved associations; later runs on the same chat cannot inherit proof. */
-  producerRoutineRunId?: string;
-  recipientRoutineRunId?: string;
   version: number;
   attemptId: string;
   createdAt: number;
